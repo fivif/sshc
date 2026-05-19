@@ -72,3 +72,7 @@ SSH 密钥 + 密码，配置里 `key` 和 `password` 二选一。
 ## License
 
 MIT
+
+## 致谢
+
+感谢 [DeepSeek](https://deepseek.com) 和 [LINUX DO](https://linux.do) 社区。本项目由 DeepSeek 模型辅助开发。

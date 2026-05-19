@@ -72,3 +72,7 @@ System builtins: `python3` `nc` `ssh` `cc`. `sshpass` only needed for password a
 ## License
 
 MIT
+
+## Acknowledgments
+
+Thanks to [DeepSeek](https://deepseek.com) and the [LINUX DO](https://linux.do) community. This project was developed with assistance from DeepSeek models.
