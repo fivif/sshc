@@ -1,6 +1,8 @@
+<sub>🌐 <a href="README.md">中文</a></sub>
+
 # sshc — Agent-Native SSH Multiplexing
 
-Blazing-fast SSH multiplexing CLI built for AI agents. Zero-overhead C daemon with ControlMaster connection reuse eliminates repeated authentication latency.
+Blazing-fast SSH multiplexing CLI built for AI agents. Pure C daemon with ControlMaster connection reuse — let your agent manage remote servers as if they were local.
 
 ```bash
 npx skills add fivif/sshc -g
@@ -8,13 +10,32 @@ npx skills add fivif/sshc -g
 
 ## Why sshc?
 
-AI agents (Claude Code, Codex, Cursor) frequently need to run commands on remote servers. Raw SSH re-authenticates every time — adding 300ms-2s latency per command. sshc solves this:
+When you manage multiple VPS instances, run batch ops across servers, or let an AI agent handle your infrastructure, repeated SSH handshakes add up. SSH's built-in ControlMaster works but requires manual socket management. sshc automates all of that:
 
-- **~15ms daemon overhead** — matches raw SSH performance ceiling
-- **Fork-per-request C daemon** — handles concurrent agent calls natively
-- **REST API for self-configuration** — agents add/remove servers without human intervention
-- **Zero npm/pip dependencies** — python3 + nc + cc, everything ships with macOS/Linux
-- **Single-file distributable** — drop 3 files anywhere, no install step
+- **Agent-first design** — REST API + Web UI, agents self-configure server profiles
+- **Native concurrency** — C fork-per-request, commands run truly in parallel
+- **Zero-dependency distribution** — python3 + nc + cc ship with every OS, just drop 3 files
+- **~15ms daemon overhead** — end-to-end latency matches raw SSH
+
+## Agent Interaction Demo
+
+Once installed, your agent picks up sshc automatically. Example session:
+
+```
+User: Check all my servers
+Agent: ● prod: alive  ● staging: alive  ○ dev: dead
+
+User: Show disk usage on prod
+Agent: /dev/vda1  64G  51G  14G  79% /
+      ⚠️ Disk almost full, should I clean up?
+
+User: Update all three servers
+Agent: [running in parallel]
+      prod: apt update done ✓
+      staging: apt update done ✓
+      dev: connection failed ✗
+      dev is unreachable — needs manual inspection
+```
 
 ## Quick Start
 
@@ -44,7 +65,10 @@ EOF
 # 4. Start daemon
 ./sshc daemon
 
-# 5. Run remote commands
+# 5. Health check
+./sshc health
+
+# 6. Run remote commands
 ./sshc exec my-server "uptime"
 ```
 
@@ -53,9 +77,9 @@ EOF
 ```bash
 sshc daemon                   # Start daemon
 sshc health [profile]         # Health check (all or specific)
-sshc exec <profile> <cmd>     # Execute remote command
+sshc exec <profile> <cmd> [timeout]  # Execute remote command
 sshc profiles                 # List all servers
-sshc add <name> <user@host> -i <key>    # Add server
+sshc add <name> <user@host> -i <key> [-p port]  # Add server
 sshc remove <name>            # Remove server
 sshc default <name>           # Set default server
 sshc reconnect <profile>      # Force reconnect
@@ -64,16 +88,21 @@ sshc web [port]               # Launch web UI
 
 ## Agent Self-Configuration
 
-Agents manage server profiles via the web UI REST API — no human needed:
+Agents manage server profiles via the web UI REST API — users only provide credentials once:
 
 ```bash
 # Start web UI
 ./sshc web
 
-# Agent adds a server
+# Agent adds server (key auth)
 curl -X POST http://127.0.0.1:17375/api/profiles \
   -H 'Content-Type: application/json' \
   -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
+
+# Agent adds server (password auth)
+curl -X POST http://127.0.0.1:17375/api/profiles \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"staging","host":"5.6.7.8","user":"admin","password":"mypass","port":2222}'
 
 # Agent tests connection
 curl -X POST http://127.0.0.1:17375/api/test/prod
@@ -121,14 +150,9 @@ sshc (bash) ──nc──> daemon.sock (UNIX socket)
 ```
 
 - Pure C daemon with `vfork()` + `execvp()` — zero shell, zero temp files, zero polling
-- `posix_spawnp()` for macOS-optimized master connection setup
-- Blocking pipe I/O — no busy-wait, no `usleep()`
-- ControlMaster socket with `ControlPersist=300` for connection reuse
-- Key fallback: `ssh_exec` always passes `-i` so expired master sockets don't cause auth failures
-
-## Performance
-
-Daemon overhead measured at ~15ms above raw SSH. Remaining latency is SSH/network jitter (inherent to TCP + SSH multiplexing). When benchmarking, test raw SSH simultaneously to establish the true baseline.
+- Blocking pipe I/O — no busy-wait
+- ControlMaster auto-warmup, reuse after first connection
+- Key fallback: `-i` flag always passed, degraded auth when master socket expires
 
 ## Dependencies
 

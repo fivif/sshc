@@ -2,7 +2,7 @@
 
 # sshc — AI Agent 原生 SSH 多路复用
 
-为 AI Agent 打造的极速 SSH 多路复用 CLI。纯 C 守护进程 + ControlMaster 连接复用，消除重复认证延迟。
+为 AI Agent 打造的极速 SSH 多路复用 CLI。纯 C 守护进程 + ControlMaster 连接复用，让 Agent 能像操作本地一样操作远程服务器。
 
 ```bash
 npx skills add fivif/sshc -g
@@ -10,13 +10,32 @@ npx skills add fivif/sshc -g
 
 ## 为什么用 sshc？
 
-AI Agent（Claude Code、Codex、Cursor）经常需要在远程服务器上执行命令。原生 SSH 每次都要重新认证——每条命令增加 200ms-2s 延迟。sshc 解决这个问题：
+当你需要管理多台 VPS、批量执行运维任务、或者让 AI Agent 帮你管服务器时，每次 SSH 都要重新握手认证。ssh 自带的 ControlMaster 能用但需要手动管理 socket、配置繁琐。sshc 把这些自动化了：
 
-- **~15ms 守护进程开销** — 性能追平裸 SSH 上限
-- **Fork-per-request C 守护进程** — 原生支持并发 Agent 调用
-- **REST API 自配置** — Agent 无需人工干预即可自行添加/删除服务器
-- **零 npm/pip 依赖** — python3 + nc + cc，macOS/Linux 系统自带
-- **单文件分发** — 丢 3 个文件到任意目录即可使用
+- **Agent 优先设计** — REST API + Web UI，Agent 可自行添加/删除服务器配置
+- **并发原生支持** — C fork-per-request 架构，多条命令真正并行执行
+- **零依赖分发** — python3 + nc + cc 系统自带，丢 3 个文件就能用
+- **~15ms 守护进程开销** — 端到端延迟追平裸 SSH
+
+## Agent 使用演示
+
+安装后，Agent 会自动识别 sshc 技能。典型交互：
+
+```
+用户：帮我看看所有服务器状态
+Agent：● prod: alive  ● staging: alive  ○ dev: dead
+
+用户：在 prod 上查一下磁盘
+Agent：/dev/vda1  64G  51G  14G  79% /
+      ⚠️ 磁盘快满了，要清理吗？
+
+用户：把三台服务器都更新一下
+Agent：[并行执行]
+      prod: apt update done ✓
+      staging: apt update done ✓
+      dev: connection failed ✗
+      dev 服务器失联，需要你手动检查一下
+```
 
 ## 快速开始
 
@@ -46,7 +65,10 @@ EOF
 # 4. 启动守护进程
 ./sshc daemon
 
-# 5. 执行远程命令
+# 5. 健康检查
+./sshc health
+
+# 6. 执行远程命令
 ./sshc exec my-server "uptime"
 ```
 
@@ -55,9 +77,9 @@ EOF
 ```bash
 sshc daemon                   # 启动守护进程
 sshc health [profile]         # 健康检查（不指定=全部）
-sshc exec <profile> <cmd>     # 执行远程命令
+sshc exec <profile> <cmd> [timeout]  # 执行远程命令
 sshc profiles                 # 列出所有服务器
-sshc add <name> <user@host> -i <key>    # 添加服务器
+sshc add <name> <user@host> -i <key> [-p port]  # 添加服务器
 sshc remove <name>            # 移除服务器
 sshc default <name>           # 设置默认服务器
 sshc reconnect <profile>      # 强制重连
@@ -66,16 +88,21 @@ sshc web [port]               # 启动 Web 管理界面
 
 ## Agent 自配置
 
-Agent 通过 Web UI 的 REST API 自行管理服务器配置——无需人工介入：
+Agent 可以通过 Web UI 的 REST API 自行管理服务器——用户只需提供一次连接信息：
 
 ```bash
 # 启动 Web 界面
 ./sshc web
 
-# Agent 添加服务器
+# Agent 添加服务器（密钥认证）
 curl -X POST http://127.0.0.1:17375/api/profiles \
   -H 'Content-Type: application/json' \
   -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
+
+# Agent 添加服务器（密码认证）
+curl -X POST http://127.0.0.1:17375/api/profiles \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"staging","host":"5.6.7.8","user":"admin","password":"mypass","port":2222}'
 
 # Agent 测试连接
 curl -X POST http://127.0.0.1:17375/api/test/prod
@@ -123,14 +150,9 @@ sshc (bash) ──nc──> daemon.sock (UNIX socket)
 ```
 
 - 纯 C 守护进程，`vfork()` + `execvp()` — 零 shell、零临时文件、零轮询
-- `posix_spawnp()` 优化 macOS 下的 master 连接建立
-- 阻塞管道 I/O — 无忙等待、无 `usleep()`
-- ControlMaster socket + `ControlPersist=300` 连接复用
-- 密钥 fallback：`ssh_exec` 始终携带 `-i`，master socket 过期时自动退化密钥认证
-
-## 性能
-
-守护进程开销约 15ms（高于裸 SSH）。剩余延迟来自 SSH/网络抖动（TCP + SSH 多路复用的固有波动）。基准测试时请同步测试裸 SSH 以建立真实基线。
+- 阻塞管道 I/O — 无忙等待
+- ControlMaster 自动预热，首次连接后复用
+- 密钥 fallback：master socket 过期时自动退化密钥认证
 
 ## 依赖
 
