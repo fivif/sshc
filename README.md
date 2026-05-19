@@ -5,7 +5,7 @@
 为 AI Agent 打造的极速 SSH 多路复用 CLI。纯 C 守护进程 + ControlMaster 连接复用，让 Agent 能像操作本地一样操作远程服务器。
 
 ```bash
-npx skills add fivif/sshc -g
+npx skills add fivif/sshc -g --agent claude-code -y
 ```
 
 ## 为什么用 sshc？
