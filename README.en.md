@@ -5,7 +5,7 @@
 Blazing-fast SSH multiplexing CLI built for AI agents. Pure C daemon with ControlMaster connection reuse — let your agent manage remote servers as if they were local.
 
 ```bash
-npx skills add fivif/sshc -g -y --agent '*'
+npx skills add fivif/sshc -g
 ```
 
 ## Why sshc?
