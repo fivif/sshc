@@ -7,7 +7,7 @@
 
 import json, os, sys, subprocess, socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 
 APP_DIR = os.path.expanduser("~/.sshc")
@@ -124,7 +124,7 @@ async function addProfile() {
   const user = document.getElementById('f_user').value.trim();
   const port = parseInt(document.getElementById('f_port').value) || 22;
   const key = document.getElementById('f_key').value.trim();
-  const password = document.getElementById('f_password').value;
+  const password = document.getElementById('f_password').value.trim();
 
   if (!name || !host) return msg('名称和主机不能为空', 'err');
 
@@ -162,14 +162,26 @@ async function setDefault(name) {
 }
 
 async function testProfile(name) {
-  const btn = event.target;
-  btn.textContent = '...';
-  btn.disabled = true;
+  const btn = document.querySelector('[data-action="test"][data-name="' + CSS.escape(name) + '"]');
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
   const r = await api('POST', '/api/test/' + encodeURIComponent(name));
-  btn.textContent = r.alive ? '●' : '○';
-  btn.style.color = r.alive ? 'var(--green)' : 'var(--red)';
-  btn.disabled = false;
+  if (btn) {
+    btn.textContent = r.alive ? '●' : '○';
+    btn.style.color = r.alive ? 'var(--green)' : 'var(--red)';
+    btn.disabled = false;
+  }
 }
+
+// Event delegation — no inline onclick, no XSS risk from server names
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const name = btn.dataset.name;
+  const action = btn.dataset.action;
+  if (action === 'test') testProfile(name);
+  else if (action === 'delete') deleteProfile(name);
+  else if (action === 'default') setDefault(name);
+});
 
 async function refresh() {
   const r = await api('GET', '/api/profiles');
@@ -182,18 +194,17 @@ async function refresh() {
   let html = '<table><tr><th>状态</th><th>名称</th><th>主机</th><th>用户</th><th>端口</th><th></th></tr>';
   for (const [name, p] of Object.entries(r.profiles)) {
     const isDef = name === r.default;
-    const hasPass = !!p.password;
-    html += `<tr>
-      <td><span class="status ${p.alive?'alive':'dead'}"></span></td>
-      <td>${name}${isDef?'<span class="badge def">默认</span>':''}</td>
-      <td>${p.host}</td>
-      <td>${p.user||'root'}</td>
-      <td>${p.port||22}</td>
-      <td>
-        <button class="btn-test" onclick="testProfile('${name}')">测试</button>
-        ${!isDef?`<button class="btn btn-del" onclick="setDefault('${name}')" style="margin-left:4px;font-size:11px;padding:3px 8px;border-color:var(--border);color:var(--muted)">默认</button>`:''}
-        <button class="btn btn-del" onclick="deleteProfile('${name}')" style="margin-left:4px">删除</button>
-      </td></tr>`;
+    html += '<tr>' +
+      '<td><span class="status ' + (p.alive?'alive':'dead') + '"></span></td>' +
+      '<td>' + name + (isDef?'<span class="badge def">默认</span>':'') + '</td>' +
+      '<td>' + p.host + '</td>' +
+      '<td>' + (p.user||'root') + '</td>' +
+      '<td>' + (p.port||22) + '</td>' +
+      '<td>' +
+        '<button class="btn-test" data-action="test" data-name="' + name.replace(/"/g,'&quot;') + '">测试</button>' +
+        (!isDef ? '<button class="btn btn-del" data-action="default" data-name="' + name.replace(/"/g,'&quot;') + '" style="margin-left:4px;font-size:11px;padding:3px 8px;border-color:var(--border);color:var(--muted)">默认</button>' : '') +
+        '<button class="btn btn-del" data-action="delete" data-name="' + name.replace(/"/g,'&quot;') + '" style="margin-left:4px">删除</button>' +
+      '</td></tr>';
   }
   html += '</table>';
   list.innerHTML = html;
@@ -246,6 +257,10 @@ def check_alive(name, cfg):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+
+    def _path_name(self, prefix="/api/profiles/"):
+        u = urlparse(self.path)
+        return unquote(u.path.split("/")[-1])
 
     def _json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False, indent=2)
@@ -308,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "name": name, "msg": "profile added"})
 
         elif u.path.startswith("/api/test/"):
-            name = u.path.split("/")[-1]
+            name = self._path_name("/api/test/")
             cfg = load_profiles()
             alive = check_alive(name, cfg)
             self._json({"ok": True, "name": name, "alive": alive})
@@ -319,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         u = urlparse(self.path)
         if u.path.startswith("/api/profiles/"):
-            name = u.path.split("/")[-1]
+            name = self._path_name()
             cfg = load_profiles()
             if name not in cfg.get("servers", {}):
                 return self._json({"ok": False, "error": f"profile not found: {name}"}, 404)
@@ -335,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         body = self._read_body()
         if u.path.startswith("/api/profiles/"):
-            name = u.path.split("/")[-1]
+            name = self._path_name()
             cfg = load_profiles()
             if name not in cfg.get("servers", {}):
                 return self._json({"ok": False, "error": f"profile not found: {name}"}, 404)
