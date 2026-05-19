@@ -6,20 +6,28 @@ set -e
 APP_DIR="${HOME}/.sshc"
 PROFILES_FILE="${APP_DIR}/profiles.json"
 DAEMON_SOCK="${APP_DIR}/daemon.sock"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
-# Auto-discover daemon binary across install locations
-_find_bin() {
+# Auto-discover or compile daemon binary
+_find_or_build() {
     local name="$1"
+    local src="${2:-}"
+    # Search install paths for existing binary
     for dir in "$SCRIPT_DIR" \
                "$HOME/.claude/skills/sshc" \
                "$HOME/.agents/skills/sshc"; do
         if [ -x "$dir/$name" ]; then echo "$dir/$name"; return 0; fi
     done
+    # Auto-compile from source if available
+    if [ -n "$src" ] && [ -f "$SCRIPT_DIR/$src" ]; then
+        echo "Building $name from source..." >&2
+        cc -O2 -o "$SCRIPT_DIR/$name" "$SCRIPT_DIR/$src" && \
+            { echo "$SCRIPT_DIR/$name"; return 0; }
+    fi
     echo "$SCRIPT_DIR/$name"
 }
-DAEMON_BIN="$(_find_bin sshc-daemon)"
-WEB_BIN="$(_find_bin sshc-web)"
+DAEMON_BIN="$(_find_or_build sshc-daemon sshc-daemon.c)"
+WEB_BIN="$(_find_or_build sshc-web)"
 
 send() {
     if [ ! -S "$DAEMON_SOCK" ]; then
