@@ -1,31 +1,33 @@
-# sshc — Agent-Native SSH Multiplexing
+<sub>🌐 <a href="README.en.md">English</a></sub>
 
-Blazing-fast SSH multiplexing CLI built for AI agents. Zero-overhead C daemon with ControlMaster connection reuse eliminates repeated authentication latency.
+# sshc — AI Agent 原生 SSH 多路复用
+
+为 AI Agent 打造的极速 SSH 多路复用 CLI。纯 C 守护进程 + ControlMaster 连接复用，消除重复认证延迟。
 
 ```bash
 npx skills add fivif/sshc -g
 ```
 
-## Why sshc?
+## 为什么用 sshc？
 
-AI agents (Claude Code, Codex, Cursor) frequently need to run commands on remote servers. Raw SSH re-authenticates every time — adding 300ms-2s latency per command. sshc solves this:
+AI Agent（Claude Code、Codex、Cursor）经常需要在远程服务器上执行命令。原生 SSH 每次都要重新认证——每条命令增加 200ms-2s 延迟。sshc 解决这个问题：
 
-- **~15ms daemon overhead** — matches raw SSH performance ceiling
-- **Fork-per-request C daemon** — handles concurrent agent calls natively
-- **REST API for self-configuration** — agents add/remove servers without human intervention
-- **Zero npm/pip dependencies** — python3 + nc + cc, everything ships with macOS/Linux
-- **Single-file distributable** — drop 3 files anywhere, no install step
+- **~15ms 守护进程开销** — 性能追平裸 SSH 上限
+- **Fork-per-request C 守护进程** — 原生支持并发 Agent 调用
+- **REST API 自配置** — Agent 无需人工干预即可自行添加/删除服务器
+- **零 npm/pip 依赖** — python3 + nc + cc，macOS/Linux 系统自带
+- **单文件分发** — 丢 3 个文件到任意目录即可使用
 
-## Quick Start
+## 快速开始
 
 ```bash
-# 1. Compile daemon
+# 1. 编译守护进程
 cc -O2 -o sshc-daemon sshc-daemon.c
 
-# 2. Make executable
+# 2. 确保可执行
 chmod +x sshc sshc-daemon
 
-# 3. Create config
+# 3. 创建配置
 mkdir -p ~/.sshc
 cat > ~/.sshc/profiles.json << 'EOF'
 {
@@ -41,49 +43,49 @@ cat > ~/.sshc/profiles.json << 'EOF'
 }
 EOF
 
-# 4. Start daemon
+# 4. 启动守护进程
 ./sshc daemon
 
-# 5. Run remote commands
+# 5. 执行远程命令
 ./sshc exec my-server "uptime"
 ```
 
-## Commands
+## 命令
 
 ```bash
-sshc daemon                   # Start daemon
-sshc health [profile]         # Health check (all or specific)
-sshc exec <profile> <cmd>     # Execute remote command
-sshc profiles                 # List all servers
-sshc add <name> <user@host> -i <key>    # Add server
-sshc remove <name>            # Remove server
-sshc default <name>           # Set default server
-sshc reconnect <profile>      # Force reconnect
-sshc web [port]               # Launch web UI
+sshc daemon                   # 启动守护进程
+sshc health [profile]         # 健康检查（不指定=全部）
+sshc exec <profile> <cmd>     # 执行远程命令
+sshc profiles                 # 列出所有服务器
+sshc add <name> <user@host> -i <key>    # 添加服务器
+sshc remove <name>            # 移除服务器
+sshc default <name>           # 设置默认服务器
+sshc reconnect <profile>      # 强制重连
+sshc web [port]               # 启动 Web 管理界面
 ```
 
-## Agent Self-Configuration
+## Agent 自配置
 
-Agents manage server profiles via the web UI REST API — no human needed:
+Agent 通过 Web UI 的 REST API 自行管理服务器配置——无需人工介入：
 
 ```bash
-# Start web UI
+# 启动 Web 界面
 ./sshc web
 
-# Agent adds a server
+# Agent 添加服务器
 curl -X POST http://127.0.0.1:17375/api/profiles \
   -H 'Content-Type: application/json' \
   -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
 
-# Agent tests connection
+# Agent 测试连接
 curl -X POST http://127.0.0.1:17375/api/test/prod
 ```
 
-Full REST API: `GET/POST /api/profiles`, `DELETE/PUT /api/profiles/:name`, `POST /api/test/:name`
+完整 REST API：`GET/POST /api/profiles`、`DELETE/PUT /api/profiles/:name`、`POST /api/test/:name`
 
-## Configuration
+## 配置文件
 
-`~/.sshc/profiles.json`:
+`~/.sshc/profiles.json`：
 
 ```json
 {
@@ -105,9 +107,9 @@ Full REST API: `GET/POST /api/profiles`, `DELETE/PUT /api/profiles/:name`, `POST
 }
 ```
 
-Supports both SSH key and password authentication.
+支持 SSH 密钥和密码两种认证方式。
 
-## Architecture
+## 架构
 
 ```
 sshc (bash) ──nc──> daemon.sock (UNIX socket)
@@ -116,48 +118,48 @@ sshc (bash) ──nc──> daemon.sock (UNIX socket)
                          │
                     vfork()+execvp("ssh") + pipe
                          │
-                    ControlMaster ──> Remote Server
-                    (~/.sshc/mux/ssh-<name>.sock, persist 300s)
+                    ControlMaster ──> 远程服务器
+                    (~/.sshc/mux/ssh-<name>.sock, 持久 300s)
 ```
 
-- Pure C daemon with `vfork()` + `execvp()` — zero shell, zero temp files, zero polling
-- `posix_spawnp()` for macOS-optimized master connection setup
-- Blocking pipe I/O — no busy-wait, no `usleep()`
-- ControlMaster socket with `ControlPersist=300` for connection reuse
-- Key fallback: `ssh_exec` always passes `-i` so expired master sockets don't cause auth failures
+- 纯 C 守护进程，`vfork()` + `execvp()` — 零 shell、零临时文件、零轮询
+- `posix_spawnp()` 优化 macOS 下的 master 连接建立
+- 阻塞管道 I/O — 无忙等待、无 `usleep()`
+- ControlMaster socket + `ControlPersist=300` 连接复用
+- 密钥 fallback：`ssh_exec` 始终携带 `-i`，master socket 过期时自动退化密钥认证
 
-## Performance
+## 性能
 
-Daemon overhead measured at ~15ms above raw SSH. Remaining latency is SSH/network jitter (inherent to TCP + SSH multiplexing). When benchmarking, test raw SSH simultaneously to establish the true baseline.
+守护进程开销约 15ms（高于裸 SSH）。剩余延迟来自 SSH/网络抖动（TCP + SSH 多路复用的固有波动）。基准测试时请同步测试裸 SSH 以建立真实基线。
 
-## Dependencies
+## 依赖
 
-| Dependency | Purpose |
-|-----------|---------|
-| `cc` (clang/gcc) | Compile C daemon |
-| `python3` | JSON + web UI (system builtin) |
-| `nc` | UNIX socket IPC (system builtin) |
-| `ssh` | OpenSSH client |
-| `sshpass` | Password auth (optional) |
+| 依赖 | 用途 |
+|------|------|
+| `cc` (clang/gcc) | 编译 C 守护进程 |
+| `python3` | JSON 解析 + Web UI（系统自带） |
+| `nc` | UNIX socket 通信（系统自带） |
+| `ssh` | OpenSSH 客户端 |
+| `sshpass` | 密码认证（可选） |
 
-## Sharing
+## 分发
 
-Drop 3 files anywhere — no install required:
+只需 3 个文件，丢到任意目录即可：
 
 ```
-sshc              # CLI script
-sshc-daemon.c     # C daemon source
-sshc-daemon       # Pre-compiled binary (optional, same platform)
+sshc              # CLI 脚本
+sshc-daemon.c     # C 守护进程源码
+sshc-daemon       # 预编译二进制（可选，同平台直接用）
 ```
 
-Each user maintains their own `~/.sshc/profiles.json`.
+各自维护自己的 `~/.sshc/profiles.json`。
 
-## Security
+## 安全
 
-- Config file: `chmod 600 ~/.sshc/profiles.json`
-- Daemon socket: UNIX domain, restricted `0600`
-- Web UI: binds `127.0.0.1` only, no external exposure
-- Passwords stored as plaintext — prefer key auth for production
+- 配置文件：`chmod 600 ~/.sshc/profiles.json`
+- 守护进程 socket：UNIX domain，权限 `0600`
+- Web UI：仅绑定 `127.0.0.1`，不对外暴露
+- 密码明文存储 — 生产环境建议使用密钥认证
 
 ## License
 
