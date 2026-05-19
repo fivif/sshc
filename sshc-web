@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""sshc-web — 管理 ~/.sshc/profiles.json 的 Web UI + REST API
+
+启动: python3 sshc-web [-p port]
+默认端口: 17375
+"""
+
+import json, os, sys, subprocess, socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+from pathlib import Path
+
+APP_DIR = os.path.expanduser("~/.sshc")
+PROFILES_FILE = os.path.join(APP_DIR, "profiles.json")
+BIND = "127.0.0.1"
+
+HTML = r"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>sshc — VPS Manager</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--input:#0d1117}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh}
+nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
+nav h1{font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px}
+nav h1 span{color:var(--accent)}
+main{max-width:860px;margin:0 auto;padding:24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:20px}
+.card h2{font-size:15px;margin-bottom:16px;color:var(--text)}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.field{flex:1;min-width:160px;margin-bottom:14px}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.field input,.field select{width:100%;padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none}
+.field input:focus,.field select:focus{border-color:var(--accent)}
+.auth-toggle{display:flex;gap:0;margin-bottom:14px}
+.auth-toggle button{flex:1;padding:7px;background:var(--input);border:1px solid var(--border);color:var(--muted);font-size:12px;cursor:pointer;transition:.15s}
+.auth-toggle button:first-child{border-radius:6px 0 0 6px}
+.auth-toggle button:last-child{border-radius:0 6px 6px 0}
+.auth-toggle button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn{padding:8px 20px;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:.15s}
+.btn-add{background:var(--accent);color:#fff;width:100%}
+.btn-add:hover{opacity:.85}
+.btn-test{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:12px;padding:4px 10px}
+.btn-del{background:transparent;border:1px solid var(--red);color:var(--red);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;border-bottom:1px solid var(--border)}
+td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--border)}
+td:last-child{text-align:right}
+.status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.status.alive{background:var(--green)}
+.status.dead{background:var(--red)}
+.empty{text-align:center;color:var(--muted);padding:40px 0}
+.msg{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none}
+.msg.ok{background:#1a3a1a;border:1px solid #2d5a2d;color:var(--green);display:block}
+.msg.err{background:#3a1a1a;border:1px solid #5a2d2d;color:var(--red);display:block}
+.badge{font-size:10px;padding:2px 6px;border-radius:10px;margin-left:6px}
+.badge.def{background:var(--accent);color:#fff}
+</style>
+</head>
+<body>
+<nav>
+  <h1><span>⚡</span> sshc</h1>
+  <span style="font-size:12px;color:var(--muted)">VPS Manager</span>
+</nav>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <div class="card">
+    <h2>+ 添加服务器</h2>
+    <div class="row">
+      <div class="field"><label>名称</label><input id="f_name" placeholder="my-server"></div>
+      <div class="field"><label>主机</label><input id="f_host" placeholder="1.2.3.4"></div>
+      <div class="field"><label>端口</label><input id="f_port" value="22"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>用户名</label><input id="f_user" value="root"></div>
+      <div class="field" style="flex:2">
+        <label>认证方式</label>
+        <div class="auth-toggle">
+          <button id="bt_key" class="active" onclick="setAuth('key')">密钥路径</button>
+          <button id="bt_pw" onclick="setAuth('password')">密码</button>
+        </div>
+        <input id="f_key" placeholder="~/.ssh/id_ed25519">
+        <input id="f_password" placeholder="输入密码" style="display:none" type="password">
+      </div>
+    </div>
+    <button class="btn btn-add" onclick="addProfile()">添加服务器</button>
+  </div>
+
+  <div class="card">
+    <h2>服务器列表</h2>
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+let auth_mode = 'key';
+function setAuth(m) {
+  auth_mode = m;
+  document.getElementById('bt_key').className = m==='key'?'active':'';
+  document.getElementById('bt_pw').className = m==='password'?'active':'';
+  document.getElementById('f_key').style.display = m==='key'?'':'none';
+  document.getElementById('f_password').style.display = m==='password'?'':'none';
+}
+
+function msg(text, type) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'msg ' + type;
+  setTimeout(() => el.className = 'msg', 3000);
+}
+
+async function api(method, path, body) {
+  const r = await fetch(path, {method, headers:{'Content-Type':'application/json'}, body:body?JSON.stringify(body):undefined});
+  return r.json();
+}
+
+async function addProfile() {
+  const name = document.getElementById('f_name').value.trim();
+  const host = document.getElementById('f_host').value.trim();
+  const user = document.getElementById('f_user').value.trim();
+  const port = parseInt(document.getElementById('f_port').value) || 22;
+  const key = document.getElementById('f_key').value.trim();
+  const password = document.getElementById('f_password').value;
+
+  if (!name || !host) return msg('名称和主机不能为空', 'err');
+
+  const payload = {name, host, user, port};
+  if (auth_mode === 'key') {
+    if (!key) return msg('请输入密钥路径', 'err');
+    payload.key = key;
+  } else {
+    if (!password) return msg('请输入密码', 'err');
+    payload.password = password;
+  }
+
+  const r = await api('POST', '/api/profiles', payload);
+  if (r.ok) {
+    msg('已添加: ' + name, 'ok');
+    document.getElementById('f_name').value = '';
+    document.getElementById('f_host').value = '';
+    document.getElementById('f_password').value = '';
+    refresh();
+  } else {
+    msg(r.error || '添加失败', 'err');
+  }
+}
+
+async function deleteProfile(name) {
+  if (!confirm('删除服务器 ' + name + '？')) return;
+  const r = await api('DELETE', '/api/profiles/' + encodeURIComponent(name));
+  if (r.ok) { msg('已删除: ' + name, 'ok'); refresh(); }
+  else msg(r.error || '删除失败', 'err');
+}
+
+async function setDefault(name) {
+  await api('PUT', '/api/profiles/' + encodeURIComponent(name), {default: true});
+  refresh();
+}
+
+async function testProfile(name) {
+  const btn = event.target;
+  btn.textContent = '...';
+  btn.disabled = true;
+  const r = await api('POST', '/api/test/' + encodeURIComponent(name));
+  btn.textContent = r.alive ? '●' : '○';
+  btn.style.color = r.alive ? 'var(--green)' : 'var(--red)';
+  btn.disabled = false;
+}
+
+async function refresh() {
+  const r = await api('GET', '/api/profiles');
+  const list = document.getElementById('list');
+  if (!r.profiles || Object.keys(r.profiles).length === 0) {
+    list.innerHTML = '<div class="empty">还没有服务器，添加第一个吧</div>';
+    return;
+  }
+
+  let html = '<table><tr><th>状态</th><th>名称</th><th>主机</th><th>用户</th><th>端口</th><th></th></tr>';
+  for (const [name, p] of Object.entries(r.profiles)) {
+    const isDef = name === r.default;
+    const hasPass = !!p.password;
+    html += `<tr>
+      <td><span class="status ${p.alive?'alive':'dead'}"></span></td>
+      <td>${name}${isDef?'<span class="badge def">默认</span>':''}</td>
+      <td>${p.host}</td>
+      <td>${p.user||'root'}</td>
+      <td>${p.port||22}</td>
+      <td>
+        <button class="btn-test" onclick="testProfile('${name}')">测试</button>
+        ${!isDef?`<button class="btn btn-del" onclick="setDefault('${name}')" style="margin-left:4px;font-size:11px;padding:3px 8px;border-color:var(--border);color:var(--muted)">默认</button>`:''}
+        <button class="btn btn-del" onclick="deleteProfile('${name}')" style="margin-left:4px">删除</button>
+      </td></tr>`;
+  }
+  html += '</table>';
+  list.innerHTML = html;
+}
+
+refresh();
+</script>
+</body>
+</html>"""
+
+def load_profiles():
+    os.makedirs(APP_DIR, exist_ok=True)
+    if not os.path.exists(PROFILES_FILE):
+        with open(PROFILES_FILE, "w") as f:
+            json.dump({"default": "", "servers": {}}, f, indent=2)
+    with open(PROFILES_FILE) as f:
+        return json.load(f)
+
+def save_profiles(cfg):
+    tmp = PROFILES_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, PROFILES_FILE)
+    os.chmod(PROFILES_FILE, 0o600)
+
+def check_alive(name, cfg):
+    """通过 sshc daemon 检查服务器是否存活"""
+    if name not in cfg.get("servers", {}):
+        return False
+    daemon_sock = os.path.join(APP_DIR, "daemon.sock")
+    if not os.path.exists(daemon_sock):
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect(daemon_sock)
+        req = json.dumps({"action": "health", "profile": name})
+        s.sendall((req + "\n").encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk: break
+            data += chunk
+            if b"\n" in data: break
+        s.close()
+        resp = json.loads(data.decode().strip())
+        return resp.get("alive", False)
+    except:
+        return False
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def _json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False, indent=2)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0: return {}
+        raw = self.rfile.read(length).decode()
+        return json.loads(raw) if raw else {}
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        if u.path == "/" or u.path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(HTML.encode())))
+            self.end_headers()
+            self.wfile.write(HTML.encode())
+        elif u.path == "/api/profiles":
+            cfg = load_profiles()
+            result = {"default": cfg.get("default", ""), "profiles": {}}
+            for name, s in cfg.get("servers", {}).items():
+                alive = check_alive(name, cfg)
+                result["profiles"][name] = {
+                    "host": s["host"], "user": s.get("user", "root"),
+                    "port": s.get("port", 22), "alive": alive,
+                    "has_key": "key" in s, "has_password": "password" in s,
+                }
+            self._json(result)
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        body = self._read_body()
+
+        if u.path == "/api/profiles":
+            name = body.get("name", "").strip()
+            if not name:
+                return self._json({"ok": False, "error": "name required"}, 400)
+            cfg = load_profiles()
+            if "servers" not in cfg: cfg["servers"] = {}
+            srv = {"host": body["host"], "user": body.get("user", "root"), "port": int(body.get("port", 22))}
+            if body.get("key"):
+                srv["key"] = body["key"]
+            if body.get("password"):
+                srv["password"] = body["password"]
+            cfg["servers"][name] = srv
+            if not cfg.get("default"):
+                cfg["default"] = name
+            save_profiles(cfg)
+            self._json({"ok": True, "name": name, "msg": "profile added"})
+
+        elif u.path.startswith("/api/test/"):
+            name = u.path.split("/")[-1]
+            cfg = load_profiles()
+            alive = check_alive(name, cfg)
+            self._json({"ok": True, "name": name, "alive": alive})
+
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_DELETE(self):
+        u = urlparse(self.path)
+        if u.path.startswith("/api/profiles/"):
+            name = u.path.split("/")[-1]
+            cfg = load_profiles()
+            if name not in cfg.get("servers", {}):
+                return self._json({"ok": False, "error": f"profile not found: {name}"}, 404)
+            del cfg["servers"][name]
+            if cfg.get("default") == name:
+                cfg["default"] = next(iter(cfg.get("servers", {})), "")
+            save_profiles(cfg)
+            self._json({"ok": True, "name": name, "msg": "profile removed"})
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_PUT(self):
+        u = urlparse(self.path)
+        body = self._read_body()
+        if u.path.startswith("/api/profiles/"):
+            name = u.path.split("/")[-1]
+            cfg = load_profiles()
+            if name not in cfg.get("servers", {}):
+                return self._json({"ok": False, "error": f"profile not found: {name}"}, 404)
+            if body.get("default"):
+                cfg["default"] = name
+                save_profiles(cfg)
+            self._json({"ok": True, "name": name, "msg": "set as default"})
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+def main():
+    port = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[1] == "-p" else 17375
+    server = HTTPServer((BIND, port), Handler)
+    print(f"sshc-web: http://{BIND}:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nshutdown")
+        server.server_close()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,3 @@
+sshc-daemon
+*.o
+.DS_Store

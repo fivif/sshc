@@ -1,0 +1,231 @@
+#!/bin/bash
+# sshc — SSH multiplexing CLI (shell client, zero startup overhead)
+# Daemon: C | Client: pure bash + nc
+
+set -e
+APP_DIR="${HOME}/.sshc"
+PROFILES_FILE="${APP_DIR}/profiles.json"
+DAEMON_SOCK="${APP_DIR}/daemon.sock"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DAEMON_BIN="${SCRIPT_DIR}/sshc-daemon"
+
+send() {
+    if [ ! -S "$DAEMON_SOCK" ]; then
+        echo '{"ok":false,"error":"daemon not running. Start with: sshc daemon"}' >&2
+        return 1
+    fi
+    printf '%s\n' "$1" | nc -U "$DAEMON_SOCK" 2>/dev/null
+}
+
+cmd_daemon() {
+    if [ -S "$DAEMON_SOCK" ]; then
+        echo "sshc daemon already running"
+        return 0
+    fi
+
+    echo "Starting sshc daemon..."
+    "$DAEMON_BIN" &
+    sleep 1
+    if [ -S "$DAEMON_SOCK" ]; then
+        echo "sshc daemon ready"
+    else
+        echo "ERROR: daemon failed to start"
+        return 1
+    fi
+}
+
+cmd_exec() {
+    local profile="$1"
+    local cmd="$2"
+    local timeout="${3:-30}"
+
+    if [ -z "$profile" ] || [ -z "$cmd" ]; then
+        echo "Usage: sshc exec <profile> <command>" >&2
+        return 1
+    fi
+
+    # 一次 python3 调用完成：JSON 编码 cmd → 发送 → 接收 → 解析 → 输出
+    python3 -c "
+import sys, json, subprocess, os
+
+sock = os.path.expanduser('$DAEMON_SOCK')
+req = json.dumps({'action':'exec','profile':'$profile','cmd':sys.argv[1],'timeout':$timeout})
+
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout($((timeout + 5)))
+s.connect(sock)
+s.sendall((req + '\n').encode())
+data = b''
+while True:
+    chunk = s.recv(65536)
+    if not chunk: break
+    data += chunk
+    if b'\n' in data: break
+s.close()
+
+resp = json.loads(data.decode().strip())
+if resp.get('ok'):
+    out = resp.get('stdout', '')
+    err = resp.get('stderr', '')
+    if out: sys.stdout.write(out)
+    if err: sys.stderr.write(err)
+    sys.exit(0)
+else:
+    print('ERROR: ' + resp.get('error', ''), file=sys.stderr)
+    sys.exit(resp.get('exit', 1))
+" "$cmd"
+}
+
+cmd_health() {
+    local profile="${1:-}"
+    local req
+    if [ -n "$profile" ]; then
+        req="{\"action\":\"health\",\"profile\":\"$profile\"}"
+    else
+        req='{"action":"health"}'
+    fi
+
+    local resp
+    resp=$(send "$req")
+
+    python3 -c "
+import sys, json, os
+resp = json.load(sys.stdin)
+cfg = json.load(open(os.path.expanduser('$PROFILES_FILE')))
+default = cfg.get('default','')
+
+if '$profile' != '':
+    alive = resp.get('alive', False)
+    mark = '●' if alive else '○'
+    print(f'{mark} $profile: {\"alive\" if alive else \"dead\"}')
+else:
+    for name, r in sorted(resp.items()):
+        mark = '●' if r.get('alive') else '○'
+        tag = ' (default)' if name == default else ''
+        print(f'{mark} {name}{tag}: {\"alive\" if r.get(\"alive\") else \"dead\"}')
+" <<< "$resp"
+}
+
+cmd_profiles() {
+    local resp
+    resp=$(send '{"action":"profiles"}')
+    python3 -c "
+import json, sys, os
+cfg = json.load(open(os.path.expanduser('$PROFILES_FILE')))
+default = cfg.get('default','')
+resp = json.loads('''$resp''')
+print(f'{\"NAME\":<20} {\"HOST\":<22} {\"USER\":<10} {\"PORT\":<6} {\"STATUS\"}')
+print('-' * 70)
+for name in sorted(resp.keys()):
+    r = resp[name]
+    status = '● alive' if r['alive'] else '○ dead'
+    tag = ' (default)' if r.get('default') else ''
+    print(f'{name+tag:<20} {r[\"host\"]:<22} {r[\"user\"]:<10} {str(r[\"port\"]):<6} {status}')
+" 2>/dev/null
+}
+
+cmd_add() {
+    local name="$1"
+    local target="$2"
+    local key="$3"
+    local port="${4:-22}"
+
+    if [ -z "$name" ] || [ -z "$target" ] || [ -z "$key" ]; then
+        echo "Usage: sshc add <name> <user@host> -i <key> [-p <port>]" >&2
+        return 1
+    fi
+
+    if [[ ! "$target" == *@* ]]; then
+        echo "ERROR: target format is user@host" >&2
+        return 1
+    fi
+
+    if [ ! -f "$key" ]; then
+        echo "ERROR: key file not found: $key" >&2
+        return 1
+    fi
+
+    local user="${target%@*}"
+    local host="${target#*@}"
+
+    python3 -c "
+import json, os
+f = os.path.expanduser('$PROFILES_FILE')
+os.makedirs(os.path.expanduser('$APP_DIR'), exist_ok=True)
+cfg = json.load(open(f)) if os.path.exists(f) else {}
+cfg.setdefault('servers', {})['$name'] = {
+    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port
+}
+if not cfg.get('default'):
+    cfg['default'] = '$name'
+json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
+os.replace(f+'.tmp', f)
+os.chmod(f, 0o600)
+print(f\"Added profile '$name': $user@$host\")
+"
+}
+
+cmd_remove() {
+    local name="$1"
+    [ -z "$name" ] && { echo "Usage: sshc remove <name>" >&2; return 1; }
+    python3 -c "
+import json, os
+f = os.path.expanduser('$PROFILES_FILE')
+cfg = json.load(open(f))
+if '$name' in cfg.get('servers',{}):
+    del cfg['servers']['$name']
+    if cfg.get('default') == '$name':
+        cfg['default'] = next(iter(cfg['servers'])) if cfg['servers'] else None
+    json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
+    os.replace(f+'.tmp', f)
+    print(f\"Removed profile '$name'\")
+else:
+    print(f\"ERROR: profile '$name' not found\")
+" 2>/dev/null
+}
+
+cmd_default() {
+    local name="$1"
+    [ -z "$name" ] && { echo "Usage: sshc default <name>" >&2; return 1; }
+    python3 -c "
+import json, os
+f = os.path.expanduser('$PROFILES_FILE')
+cfg = json.load(open(f))
+if '$name' in cfg.get('servers',{}):
+    cfg['default'] = '$name'
+    json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
+    os.replace(f+'.tmp', f)
+    print(f\"Default profile: $name\")
+else:
+    print(f\"ERROR: profile '$name' not found\")
+" 2>/dev/null
+}
+
+cmd_reconnect() {
+    local profile="$1"
+    [ -z "$profile" ] && { echo "Usage: sshc reconnect <profile>" >&2; return 1; }
+    local resp
+    resp=$(send "{\"action\":\"reconnect\",\"profile\":\"$profile\"}")
+    echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('msg','') or d.get('error',''))" 2>/dev/null
+}
+
+cmd_web() {
+    local port="${1:-17375}"
+    echo "Starting sshc web UI on http://127.0.0.1:$port"
+    python3 "${SCRIPT_DIR}/sshc-web" -p "$port"
+}
+
+# --- main ---
+case "${1:-}" in
+    daemon)   cmd_daemon ;;
+    exec)     shift; cmd_exec "$@" ;;
+    health)   shift; cmd_health "$@" ;;
+    profiles) cmd_profiles ;;
+    add)      shift; cmd_add "$@" ;;
+    remove)   shift; cmd_remove "$@" ;;
+    default)  shift; cmd_default "$@" ;;
+    reconnect) shift; cmd_reconnect "$@" ;;
+    web)      shift; cmd_web "$@" ;;
+    *)        echo "Usage: sshc {daemon|exec|health|profiles|add|remove|default|reconnect|web} ..." >&2; exit 1 ;;
+esac
