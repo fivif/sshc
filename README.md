@@ -1,19 +1,25 @@
-# sshc — SSH Multiplexing CLI
+# sshc — Agent-Native SSH Multiplexing
 
-Blazing-fast SSH multiplexing with zero startup overhead. Pure C daemon + Bash client + Python web UI.
+Blazing-fast SSH multiplexing CLI built for AI agents. Zero-overhead C daemon with ControlMaster connection reuse eliminates repeated authentication latency.
+
+```bash
+npx skills add fivif/sshc -g
+```
 
 ## Why sshc?
 
-SSH ControlMaster eliminates repeated authentication, but managing persistent connections is tedious. sshc provides a clean CLI, a zero-overhead C daemon, and a visual web UI — all in 3 distributable files.
+AI agents (Claude Code, Codex, Cursor) frequently need to run commands on remote servers. Raw SSH re-authenticates every time — adding 300ms-2s latency per command. sshc solves this:
 
-- **~15ms daemon overhead** — matches raw SSH performance
-- **Zero dependencies** beyond system tools (python3, nc, cc)
-- **Single-file distribution** — no package manager needed
+- **~15ms daemon overhead** — matches raw SSH performance ceiling
+- **Fork-per-request C daemon** — handles concurrent agent calls natively
+- **REST API for self-configuration** — agents add/remove servers without human intervention
+- **Zero npm/pip dependencies** — python3 + nc + cc, everything ships with macOS/Linux
+- **Single-file distributable** — drop 3 files anywhere, no install step
 
 ## Quick Start
 
 ```bash
-# 1. Compile the daemon
+# 1. Compile daemon
 cc -O2 -o sshc-daemon sshc-daemon.c
 
 # 2. Make executable
@@ -38,30 +44,42 @@ EOF
 # 4. Start daemon
 ./sshc daemon
 
-# 5. Health check
-./sshc health
-
-# 6. Run remote commands
+# 5. Run remote commands
 ./sshc exec my-server "uptime"
-
-# 7. (Optional) Launch web UI
-./sshc web
-# Open http://127.0.0.1:17375
 ```
 
 ## Commands
 
 ```bash
-sshc daemon                  # Start daemon
-sshc health [profile]        # Health check (omit for all)
-sshc exec <profile> <cmd> [timeout]  # Execute command
-sshc profiles                # List all servers and status
-sshc add <name> <user@host> -i <key> [-p port]  # Add server
-sshc remove <name>           # Remove server
-sshc default <name>          # Set default server
-sshc reconnect <profile>     # Force reconnect
-sshc web [port]              # Start web UI (default :17375)
+sshc daemon                   # Start daemon
+sshc health [profile]         # Health check (all or specific)
+sshc exec <profile> <cmd>     # Execute remote command
+sshc profiles                 # List all servers
+sshc add <name> <user@host> -i <key>    # Add server
+sshc remove <name>            # Remove server
+sshc default <name>           # Set default server
+sshc reconnect <profile>      # Force reconnect
+sshc web [port]               # Launch web UI
 ```
+
+## Agent Self-Configuration
+
+Agents manage server profiles via the web UI REST API — no human needed:
+
+```bash
+# Start web UI
+./sshc web
+
+# Agent adds a server
+curl -X POST http://127.0.0.1:17375/api/profiles \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
+
+# Agent tests connection
+curl -X POST http://127.0.0.1:17375/api/test/prod
+```
+
+Full REST API: `GET/POST /api/profiles`, `DELETE/PUT /api/profiles/:name`, `POST /api/test/:name`
 
 ## Configuration
 
@@ -87,47 +105,7 @@ sshc web [port]              # Start web UI (default :17375)
 }
 ```
 
-- `default` — default server name
-- `servers.<name>.host` — IP or domain (required)
-- `servers.<name>.user` — SSH user (default: `root`)
-- `servers.<name>.key` — SSH key path (mutually exclusive with `password`)
-- `servers.<name>.password` — plaintext password (mutually exclusive with `key`)
-- `servers.<name>.port` — SSH port (default: `22`)
-
-## Web UI
-
-`./sshc web` starts a management dashboard at `http://127.0.0.1:17375`:
-
-- Visual add/remove servers with key or password auth
-- Real-time health status
-- One-click connection testing
-- REST API for LLM/Agent auto-configuration
-
-### REST API
-
-```bash
-# List all servers
-curl http://127.0.0.1:17375/api/profiles
-
-# Add server (key auth)
-curl -X POST http://127.0.0.1:17375/api/profiles \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
-
-# Add server (password auth)
-curl -X POST http://127.0.0.1:17375/api/profiles \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"staging","host":"5.6.7.8","user":"admin","password":"mypass","port":2222}'
-
-# Set default
-curl -X PUT http://127.0.0.1:17375/api/profiles/prod -d '{"default":true}'
-
-# Test connection
-curl -X POST http://127.0.0.1:17375/api/test/prod
-
-# Delete server
-curl -X DELETE http://127.0.0.1:17375/api/profiles/staging
-```
+Supports both SSH key and password authentication.
 
 ## Architecture
 
@@ -142,38 +120,44 @@ sshc (bash) ──nc──> daemon.sock (UNIX socket)
                     (~/.sshc/mux/ssh-<name>.sock, persist 300s)
 ```
 
-- Daemon overhead ~15ms, end-to-end latency ≈ raw SSH
-- ControlMaster auto-warmup, reuse after first connection
-- Zero temp files, zero shell passthrough, zero polling
+- Pure C daemon with `vfork()` + `execvp()` — zero shell, zero temp files, zero polling
+- `posix_spawnp()` for macOS-optimized master connection setup
+- Blocking pipe I/O — no busy-wait, no `usleep()`
+- ControlMaster socket with `ControlPersist=300` for connection reuse
+- Key fallback: `ssh_exec` always passes `-i` so expired master sockets don't cause auth failures
+
+## Performance
+
+Daemon overhead measured at ~15ms above raw SSH. Remaining latency is SSH/network jitter (inherent to TCP + SSH multiplexing). When benchmarking, test raw SSH simultaneously to establish the true baseline.
 
 ## Dependencies
 
 | Dependency | Purpose |
 |-----------|---------|
 | `cc` (clang/gcc) | Compile C daemon |
-| `python3` | JSON parsing + web UI (system builtin) |
-| `nc` | UNIX socket communication (system builtin) |
+| `python3` | JSON + web UI (system builtin) |
+| `nc` | UNIX socket IPC (system builtin) |
 | `ssh` | OpenSSH client |
-| `sshpass` | Password auth support (optional) |
+| `sshpass` | Password auth (optional) |
 
 ## Sharing
 
-Only 3 files needed — drop them anywhere:
+Drop 3 files anywhere — no install required:
 
 ```
 sshc              # CLI script
-sshc-daemon.c     # Daemon source
-sshc-daemon       # Compiled binary (optional, same platform)
+sshc-daemon.c     # C daemon source
+sshc-daemon       # Pre-compiled binary (optional, same platform)
 ```
 
 Each user maintains their own `~/.sshc/profiles.json`.
 
 ## Security
 
-- Config file permissions: `chmod 600 ~/.sshc/profiles.json`
-- Daemon socket: UNIX domain socket, restricted to `0600`
-- Web UI binds to `127.0.0.1` only
-- Passwords stored in plaintext — use key auth for production
+- Config file: `chmod 600 ~/.sshc/profiles.json`
+- Daemon socket: UNIX domain, restricted `0600`
+- Web UI: binds `127.0.0.1` only, no external exposure
+- Passwords stored as plaintext — prefer key auth for production
 
 ## License
 

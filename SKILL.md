@@ -1,22 +1,36 @@
 ---
 name: sshc
-description: 通用 SSH 多路复用 CLI 工具。触发：远程服务器管理、批量运维、SSH 连接加速。
+description: >-
+  Universal SSH multiplexing CLI for AI agents. Zero-overhead C daemon with
+  ControlMaster connection reuse eliminates repeated authentication latency.
+  Trigger: remote server management, batch ops, SSH connection acceleration,
+  executing commands on remote servers, VPS administration, server health
+  checks, multi-server orchestration. Use whenever the user asks to run
+  commands on a remote server, check server status, manage VPS instances,
+  or perform DevOps tasks.
 ---
 
-# sshc — SSH 多路复用 CLI
+# sshc — Agent-Native SSH Multiplexing
 
-纯 C fork 架构 + UNIX socket，零依赖（仅需 python3 + nc），单文件分发。SSH ControlMaster 常驻复用，消除重复认证延迟。
+Pure C fork architecture + UNIX domain socket. System dependencies only (python3 + nc). Single-file distributable. SSH ControlMaster persistent multiplexing eliminates repeated auth delay.
 
-## 快速开始
+## Execution Rules
+
+1. Ensure daemon is alive before any exec: `./sshc health > /dev/null 2>&1 || ./sshc daemon &`
+2. All remote commands go through: `./sshc exec <profile> "<command>"`
+3. Independent commands can run in parallel
+4. Config contains secrets — ensure `chmod 600 ~/.sshc/profiles.json`
+
+## Quick Start
 
 ```bash
-# 1. 编译守护进程
+# 1. Compile daemon
 cc -O2 -o sshc-daemon sshc-daemon.c
 
-# 2. 确保可执行
+# 2. Ensure executable
 chmod +x sshc sshc-daemon
 
-# 3. 创建配置
+# 3. Create config
 mkdir -p ~/.sshc
 cat > ~/.sshc/profiles.json << 'EOF'
 {
@@ -32,82 +46,65 @@ cat > ~/.sshc/profiles.json << 'EOF'
 }
 EOF
 
-# 4. 启动守护进程
+# 4. Start daemon
 ./sshc daemon
 
-# 5. 健康检查
+# 5. Health check
 ./sshc health
 
-# 6. 执行远程命令
+# 6. Execute remote command
 ./sshc exec my-server "uptime"
 
-# 7. (可选) 启动 Web 管理界面
+# 7. (Optional) Launch web UI for visual management
 ./sshc web
-# 打开 http://127.0.0.1:17375
+# Open http://127.0.0.1:17375
 ```
 
-## 依赖
-
-| 依赖 | 说明 |
-|------|------|
-| `cc` (clang/gcc) | 编译 C 守护进程 |
-| `python3` | JSON 解析 + Web UI（系统自带） |
-| `nc` | UNIX socket 通信（系统自带） |
-| `ssh` | OpenSSH 客户端 |
-| `sshpass` | 密码认证支持（可选，仅密码登录需要） |
-
-## 命令
+## Commands
 
 ```bash
-sshc daemon                  # 启动守护进程
-sshc health [profile]        # 健康检查（不指定=全部，* =全部）
-sshc exec <profile> <cmd> [timeout]  # 执行命令
-sshc profiles                # 列出所有服务器和状态
-sshc add <name> <user@host> -i <key> [-p port]  # 添加服务器
-sshc remove <name>           # 移除服务器
-sshc default <name>          # 设置默认服务器
-sshc reconnect <profile>     # 强制重连
-sshc web [port]              # 启动 Web 管理界面 (默认 :17375)
+sshc daemon                  # Start daemon
+sshc health [profile]        # Health check (omit for all)
+sshc exec <profile> <cmd> [timeout]  # Execute command
+sshc profiles                # List all servers and status
+sshc add <name> <user@host> -i <key> [-p port]  # Add server
+sshc remove <name>           # Remove server
+sshc default <name>          # Set default server
+sshc reconnect <profile>     # Force reconnect
+sshc web [port]              # Start web UI (default :17375)
 ```
 
-## Web 管理界面
+## Web UI & REST API
 
-`./sshc web` 启动后访问 `http://127.0.0.1:17375`，提供：
-
-- **可视化添加/删除**：支持密钥路径和密码两种认证
-- **状态面板**：实时显示所有服务器存活状态
-- **快速测试**：一键检测连接
-- **REST API**：Agent/LLM 可自行调用 API 管理配置
-
-### API 端点
+`./sshc web` starts a management dashboard at `http://127.0.0.1:17375`. Agents can self-configure servers via REST API without human intervention:
 
 ```bash
-# 获取所有服务器
+# List all servers
 curl http://127.0.0.1:17375/api/profiles
 
-# 添加服务器（密钥）
+# Add server (key auth)
 curl -X POST http://127.0.0.1:17375/api/profiles \
   -H 'Content-Type: application/json' \
   -d '{"name":"prod","host":"1.2.3.4","user":"root","key":"~/.ssh/id_rsa"}'
 
-# 添加服务器（密码）
+# Add server (password auth)
 curl -X POST http://127.0.0.1:17375/api/profiles \
   -H 'Content-Type: application/json' \
   -d '{"name":"staging","host":"5.6.7.8","user":"admin","password":"mypass","port":2222}'
 
-# 设置默认
+# Set default
 curl -X PUT http://127.0.0.1:17375/api/profiles/prod -d '{"default":true}'
 
-# 测试连接
+# Test connection
 curl -X POST http://127.0.0.1:17375/api/test/prod
 
-# 删除服务器
+# Delete server
 curl -X DELETE http://127.0.0.1:17375/api/profiles/staging
 ```
 
-## 配置文件
+## Configuration
 
-`~/.sshc/profiles.json`：
+`~/.sshc/profiles.json`:
 
 ```json
 {
@@ -129,14 +126,14 @@ curl -X DELETE http://127.0.0.1:17375/api/profiles/staging
 }
 ```
 
-- `default`：默认服务器名
-- `servers.<name>.host`：必填，IP 或域名
-- `servers.<name>.user`：选填，默认 `root`
-- `servers.<name>.key`：密钥路径（与 `password` 二选一）
-- `servers.<name>.password`：明文密码（与 `key` 二选一）
-- `servers.<name>.port`：选填，默认 `22`
+- `default` — default server name
+- `servers.<name>.host` — IP or domain (required)
+- `servers.<name>.user` — SSH user (default: `root`)
+- `servers.<name>.key` — SSH key path (mutually exclusive with `password`)
+- `servers.<name>.password` — plaintext password (mutually exclusive with `key`)
+- `servers.<name>.port` — SSH port (default: `22`)
 
-## 架构
+## Architecture
 
 ```
 sshc (bash) ──nc──> daemon.sock (UNIX socket)
@@ -145,29 +142,21 @@ sshc (bash) ──nc──> daemon.sock (UNIX socket)
                          │
                     vfork()+execvp("ssh") + pipe
                          │
-                    ControlMaster ──> 远程服务器
-                    (~/.sshc/mux/ssh-<name>.sock, 持久 300s)
+                    ControlMaster ──> Remote Server
+                    (~/.sshc/mux/ssh-<name>.sock, persist 300s)
 ```
 
-- Daemon 纯开销 ~15ms，端到端延迟 ≈ 裸 SSH
-- ControlMaster 自动预热，首次连接后复用
-- 零临时文件、零 shell 中转、零轮询
+- Daemon overhead ~15ms, end-to-end latency ≈ raw SSH
+- ControlMaster auto-warmup, reuse after first connection
+- Zero temp files, zero shell passthrough, zero polling
+- Key fallback: if ControlMaster socket expires, SSH falls back to `-i` key automatically
 
-## 分享给团队
+## Dependencies
 
-只需 3 个文件，对方放到任意目录即可：
-
-```
-sshc              # CLI 脚本
-sshc-daemon.c     # 守护进程源码
-sshc-daemon       # 编译产物 (可选，同平台可直接用)
-```
-
-各自配自己的 `~/.sshc/profiles.json`。
-
-## 执行规则
-
-1. 先确保 daemon 存活：`./sshc health > /dev/null 2>&1 || ./sshc daemon &`
-2. 所有远程命令走 `./sshc exec <profile> "<命令>"`
-3. 多条独立命令可并行执行
-4. 配置文件包含敏感信息，确保权限 `chmod 600 ~/.sshc/profiles.json`
+| Dependency | Purpose |
+|-----------|---------|
+| `cc` (clang/gcc) | Compile C daemon |
+| `python3` | JSON parsing + web UI (system builtin) |
+| `nc` | UNIX socket communication (system builtin) |
+| `ssh` | OpenSSH client |
+| `sshpass` | Password auth support (optional) |
