@@ -7,7 +7,19 @@ APP_DIR="${HOME}/.sshc"
 PROFILES_FILE="${APP_DIR}/profiles.json"
 DAEMON_SOCK="${APP_DIR}/daemon.sock"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DAEMON_BIN="${SCRIPT_DIR}/sshc-daemon"
+
+# Auto-discover daemon binary across install locations
+_find_bin() {
+    local name="$1"
+    for dir in "$SCRIPT_DIR" \
+               "$HOME/.claude/skills/sshc" \
+               "$HOME/.agents/skills/sshc"; do
+        if [ -x "$dir/$name" ]; then echo "$dir/$name"; return 0; fi
+    done
+    echo "$SCRIPT_DIR/$name"
+}
+DAEMON_BIN="$(_find_bin sshc-daemon)"
+WEB_BIN="$(_find_bin sshc-web)"
 
 send() {
     if [ ! -S "$DAEMON_SOCK" ]; then
@@ -213,7 +225,7 @@ cmd_reconnect() {
 cmd_web() {
     local port="${1:-17375}"
     echo "Starting sshc web UI on http://127.0.0.1:$port"
-    python3 "${SCRIPT_DIR}/sshc-web" -p "$port"
+    python3 "$WEB_BIN" -p "$port"
 }
 
 # --- main ---
