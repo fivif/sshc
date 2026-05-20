@@ -65,6 +65,16 @@ Agent：[并行] prod ✓  staging ✓  dev ✗（失联需检查）
 
 SSH 密钥 + 密码，配置里 `key` 和 `password` 二选一。
 
+## 系统支持
+
+| 系统 | 状态 |
+|------|------|
+| macOS | 原生支持 |
+| Linux (Debian/Ubuntu/CentOS/Arch 等) | 原生支持 |
+| BSD (FreeBSD/OpenBSD) | 原生支持 |
+| Windows (WSL) | WSL 内完整支持 |
+| Windows (原生) | 不支持，请用 WSL |
+
 ## 依赖
 
 系统自带：`python3` `nc` `ssh` `cc`。`sshpass` 用密码时才需要。

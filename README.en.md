@@ -65,6 +65,16 @@ Agent: [parallel] prod ✓  staging ✓  dev ✗ (unreachable)
 
 SSH key or password — mutually exclusive in config.
 
+## Platform Support
+
+| OS | Status |
+|-----|--------|
+| macOS | Native |
+| Linux (Debian/Ubuntu/CentOS/Arch etc.) | Native |
+| BSD (FreeBSD/OpenBSD) | Native |
+| Windows (WSL) | Full support inside WSL |
+| Windows (native) | Not supported, use WSL |
+
 ## Dependencies
 
 System builtins: `python3` `nc` `ssh` `cc`. `sshpass` only needed for password auth.
