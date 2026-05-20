@@ -22,6 +22,9 @@ Agent：[并行] prod ✓  staging ✓  dev ✗（失联需检查）
 ```
 
 ## 安装后怎么用
+```bash
+Agent 交互： /sshc 打开UI 
+```
 
 ### 1. 添加服务器
 
