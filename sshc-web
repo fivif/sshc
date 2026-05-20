@@ -21,78 +21,186 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sshc — VPS Manager</title>
 <style>
-:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--input:#0d1117}
+:root{
+  --bg:#0f172a; --card:#1e293b; --card2:#334155; --border:#334155;
+  --text:#f1f5f9; --muted:#94a3b8; --accent:#818cf8; --accent2:#6366f1;
+  --green:#34d399; --red:#f87171; --gold:#c5a880;
+  --input:#020617; --ring:rgba(99,102,241,.15);
+  --radius-sm:10px; --radius:14px; --radius-lg:20px; --radius-xl:24px;
+  --ease:cubic-bezier(0.16,1,0.3,1);
+}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh}
-nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
-nav h1{font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px}
-nav h1 span{color:var(--accent)}
-main{max-width:860px;margin:0 auto;padding:24px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:20px}
-.card h2{font-size:15px;margin-bottom:16px;color:var(--text)}
-.row{display:flex;gap:12px;flex-wrap:wrap}
-.field{flex:1;min-width:160px;margin-bottom:14px}
-.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
-.field input,.field select{width:100%;padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none}
-.field input:focus,.field select:focus{border-color:var(--accent)}
-.auth-toggle{display:flex;gap:0;margin-bottom:14px}
-.auth-toggle button{flex:1;padding:7px;background:var(--input);border:1px solid var(--border);color:var(--muted);font-size:12px;cursor:pointer;transition:.15s}
-.auth-toggle button:first-child{border-radius:6px 0 0 6px}
-.auth-toggle button:last-child{border-radius:0 6px 6px 0}
-.auth-toggle button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn{padding:8px 20px;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:.15s}
-.btn-add{background:var(--accent);color:#fff;width:100%}
-.btn-add:hover{opacity:.85}
-.btn-test{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:12px;padding:4px 10px}
-.btn-del{background:transparent;border:1px solid var(--red);color:var(--red);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer}
-table{width:100%;border-collapse:collapse}
-th{text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;border-bottom:1px solid var(--border)}
-td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--border)}
-td:last-child{text-align:right}
-.status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-.status.alive{background:var(--green)}
-.status.dead{background:var(--red)}
-.status.checking{background:var(--muted);animation:pulse 1.2s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
-.empty{text-align:center;color:var(--muted);padding:40px 0}
-.msg{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none}
-.msg.ok{background:#1a3a1a;border:1px solid #2d5a2d;color:var(--green);display:block}
-.msg.err{background:#3a1a1a;border:1px solid #5a2d2d;color:var(--red);display:block}
-.badge{font-size:10px;padding:2px 6px;border-radius:10px;margin-left:6px}
-.badge.def{background:var(--accent);color:#fff}
-.drop-zone{border:2px dashed var(--border);border-radius:8px;padding:14px 12px;text-align:center;cursor:pointer;transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
-.drop-zone:hover,.drop-zone.drag{border-color:var(--accent);background:rgba(88,166,255,.05)}
-.drop-zone.has{border-color:var(--green);border-style:solid;background:rgba(63,185,80,.05)}
-.drop-icon{font-size:18px}
-.drop-text{color:var(--muted);font-size:12px}
-.drop-name{color:var(--green);font-size:12px;font-weight:500;word-break:break-all}
-.modal-overlay{display:none;position:fixed;z-index:100;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.6);align-items:center;justify-content:center}
-.modal-overlay.open{display:flex}
-.modal-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:28px;width:440px;max-width:90vw}
-.modal-box h3{font-size:16px;margin-bottom:20px;color:var(--text)}
-.modal-box .field select{appearance:none;-webkit-appearance:none;background:var(--input) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E") no-repeat right 10px center;padding-right:32px;cursor:pointer}
-.modal-box .field input{width:100%}
-.modal-box .field textarea{width:100%;padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;resize:vertical;min-height:60px;font-family:monospace}
-.modal-box .field textarea:focus{border-color:var(--accent)}
-.modal-hint{font-size:11px;color:var(--muted);margin-top:4px;font-family:monospace;word-break:break-all}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
-.btn-cancel{background:transparent;border:1px solid var(--border);color:var(--muted)}
-.btn-save{background:var(--accent);color:#fff}
-.btn-clear{background:transparent;border:1px solid var(--red);color:var(--red)}
-.btn-proxy{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer}
+body{
+  background:var(--bg); color:var(--text);
+  font:14px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-feature-settings:"cv02","cv03","cv04","cv11";
+  -webkit-font-smoothing:antialiased; min-height:100vh;
+}
+
+/* ── Nav ─────────────────────────────────────────────────────────── */
+nav{
+  position:sticky; top:0; z-index:40;
+  background:rgba(30,41,59,.85); backdrop-filter:blur(20px) saturate(190%);
+  -webkit-backdrop-filter:blur(20px) saturate(190%);
+  border-bottom:2px solid var(--border); padding:0 28px; height:64px;
+  display:flex; align-items:center; justify-content:space-between;
+}
+nav h1{font-size:18px;font-weight:700;display:flex;align-items:center;gap:10px;letter-spacing:-.3px}
+nav h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.4)}
+nav .sub{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+
+/* ── Layout ──────────────────────────────────────────────────────── */
+main{max-width:900px;margin:0 auto;padding:28px 24px}
+
+/* ── Card ────────────────────────────────────────────────────────── */
+.card{
+  background:var(--card); border:2px solid var(--border);
+  border-radius:var(--radius-xl); padding:28px; margin-bottom:24px;
+  box-shadow:0 4px 6px -1px rgba(0,0,0,.15),0 2px 4px -2px rgba(0,0,0,.1);
+}
+.card h2{
+  font-size:15px; font-weight:700; margin-bottom:20px; color:var(--text);
+  display:flex; align-items:center; gap:8px; letter-spacing:-.2px;
+}
+.card h2::before{content:"";display:block;width:3px;height:18px;border-radius:3px;background:var(--accent)}
+
+/* ── Form ────────────────────────────────────────────────────────── */
+.row{display:flex;gap:14px;flex-wrap:wrap}
+.field{flex:1;min-width:160px;margin-bottom:16px}
+.field label{
+  display:block; font-size:11px; color:var(--muted); margin-bottom:6px;
+  text-transform:uppercase; letter-spacing:.6px; font-weight:700;
+}
+.field input,.field select,.field textarea{
+  width:100%; padding:10px 14px; background:var(--input);
+  border:2px solid var(--border); border-radius:var(--radius-sm);
+  color:var(--text); font-size:13px; font-weight:500; outline:none;
+  transition:all .3s var(--ease); font-family:inherit;
+}
+.field input:focus,.field select:focus,.field textarea:focus{
+  border-color:var(--accent); box-shadow:0 0 0 4px var(--ring);
+}
+.field select{
+  appearance:none; -webkit-appearance:none; cursor:pointer;
+  background:var(--input) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath fill='%2394a3b8' d='M7 9L2 4h10z'/%3E%3Csvg%3E") no-repeat right 12px center;
+  padding-right:36px;
+}
+.field textarea{resize:vertical;min-height:72px;font-family:ui-monospace,SFMono-Regular,monospace}
+
+/* ── Auth Toggle (segment control) ───────────────────────────────── */
+.auth-toggle{display:flex;gap:0;margin-bottom:16px;padding:4px;background:var(--input);border:2px solid var(--border);border-radius:var(--radius-sm)}
+.auth-toggle button{flex:1;padding:9px;background:transparent;border:none;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;transition:all .3s var(--ease);border-radius:8px;position:relative;z-Index:1}
+.auth-toggle button.active{background:var(--accent);color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.2)}
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
+.btn{padding:10px 22px;border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:700;cursor:pointer;transition:all .3s var(--ease);letter-spacing:.2px}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:scale(.97)}
+.btn-add{background:var(--accent);color:#fff;width:100%;box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.btn-add:hover{background:var(--accent2);box-shadow:0 4px 16px rgba(99,102,241,.4)}
+.btn-test{background:transparent;border:2px solid var(--border);color:var(--muted);font-size:11px;padding:5px 12px;border-radius:var(--radius-sm);font-weight:600}
+.btn-test:hover{border-color:var(--accent);color:var(--accent)}
+.btn-del{background:transparent;border:2px solid rgba(248,113,113,.4);color:var(--red);font-size:11px;padding:5px 12px;border-radius:var(--radius-sm);font-weight:600}
+.btn-del:hover{background:rgba(248,113,113,.1);border-color:var(--red)}
+.btn-ghost{background:transparent;border:2px solid var(--border);color:var(--muted);font-size:11px;padding:5px 12px;border-radius:var(--radius-sm);font-weight:600}
+.btn-ghost:hover{border-color:var(--muted);color:var(--text)}
+.btn-proxy{background:transparent;border:2px solid var(--border);color:var(--muted);font-size:11px;padding:5px 12px;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;transition:all .3s var(--ease)}
 .btn-proxy.has-proxy{color:var(--accent);border-color:var(--accent)}
+.btn-proxy:hover{border-color:var(--accent);color:var(--accent)}
+.btn-save{background:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.btn-save:hover{background:var(--accent2)}
+.btn-cancel{background:transparent;border:2px solid var(--border);color:var(--muted)}
+.btn-cancel:hover{border-color:var(--muted);color:var(--text)}
+.btn-clear{background:transparent;border:2px solid rgba(248,113,113,.4);color:var(--red)}
+.btn-clear:hover{background:rgba(248,113,113,.1)}
+
+/* ── Table ───────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;padding:10px 14px;border-bottom:2px solid var(--border);font-weight:700}
+td{padding:12px 14px;font-size:13px;border-bottom:1px solid rgba(51,65,85,.5);font-weight:500}
+td:last-child{text-align:right}
+tr:hover td{background:rgba(99,102,241,.04)}
+
+/* ── Status ──────────────────────────────────────────────────────── */
+.status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;position:relative}
+.status.alive{background:var(--green);box-shadow:0 0 8px rgba(52,211,153,.5)}
+.status.dead{background:var(--red);box-shadow:0 0 8px rgba(248,113,113,.4)}
+.status.checking{background:var(--muted);animation:statusPulse 1.4s ease-in-out infinite}
+@keyframes statusPulse{0%,100%{opacity:.25;transform:scale(.85)}50%{opacity:1;transform:scale(1.15)}}
+
+/* ── Messages ────────────────────────────────────────────────────── */
+.msg{padding:12px 16px;border-radius:var(--radius-sm);margin-bottom:18px;font-size:13px;font-weight:600;display:none;border:2px solid transparent}
+.msg.ok{background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3);color:var(--green);display:block}
+.msg.err{background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.3);color:var(--red);display:block}
+
+/* ── Badge ───────────────────────────────────────────────────────── */
+.badge{font-size:10px;padding:3px 8px;border-radius:20px;margin-left:8px;font-weight:700;letter-spacing:.4px}
+.badge.def{background:rgba(99,102,241,.15);color:var(--accent);border:1px solid rgba(99,102,241,.3)}
+
+/* ── Drop Zone ───────────────────────────────────────────────────── */
+.drop-zone{
+  border:2px dashed var(--border); border-radius:var(--radius-sm);
+  padding:16px 14px; text-align:center; cursor:pointer;
+  transition:all .3s var(--ease);
+  display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;
+}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--accent);background:rgba(99,102,241,.06);box-shadow:0 0 0 4px var(--ring)}
+.drop-zone.has{border-color:var(--green);border-style:solid;background:rgba(52,211,153,.06)}
+.drop-icon{font-size:18px}
+.drop-text{color:var(--muted);font-size:12px;font-weight:500}
+.drop-name{color:var(--green);font-size:12px;font-weight:700;word-break:break-all}
+
+/* ── Modal ───────────────────────────────────────────────────────── */
+.modal-overlay{
+  display:none; position:fixed; z-index:100; inset:0;
+  background:rgba(0,0,0,.65); backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  align-items:center; justify-content:center;
+}
+.modal-overlay.open{display:flex}
+.modal-box{
+  background:var(--card); border:2px solid var(--border);
+  border-radius:var(--radius-xl); padding:32px; width:460px; max-width:92vw;
+  box-shadow:0 20px 60px rgba(0,0,0,.5);
+  animation:modalIn .3s var(--ease);
+}
+@keyframes modalIn{from{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.modal-box h3{font-size:17px;font-weight:700;margin-bottom:24px;color:var(--text);letter-spacing:-.2px}
+.modal-hint{font-size:11px;color:var(--muted);margin-top:6px;font-family:ui-monospace,SFMono-Regular,monospace;word-break:break-all;font-weight:500}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
+
+/* ── Toast ───────────────────────────────────────────────────────── */
+#toast-container{position:fixed;bottom:24px;right:24px;z-index:200;display:flex;flex-direction:column;gap:10px;pointer-events:none}
+.toast{
+  background:var(--card); border:2px solid var(--border);
+  border-radius:var(--radius); padding:14px 18px;
+  box-shadow:0 10px 40px rgba(0,0,0,.4);
+  font-size:13px; font-weight:600; color:var(--text);
+  pointer-events:auto; animation:toastIn .4s var(--ease);
+  display:flex; align-items:center; gap:10px; max-width:380px;
+}
+.toast .toast-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.toast.ok .toast-dot{background:var(--green)}
+.toast.err .toast-dot{background:var(--red)}
+@keyframes toastIn{from{opacity:0;transform:translateY(16px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+.toast.out{animation:toastOut .3s var(--ease) forwards}
+@keyframes toastOut{to{opacity:0;transform:translateY(-8px) scale(.95)}}
+
+/* ── Empty state ─────────────────────────────────────────────────── */
+.empty{text-align:center;color:var(--muted);padding:48px 0;font-size:14px;font-weight:500}
 </style>
 </head>
 <body>
 <nav>
-  <h1><span>⚡</span> sshc</h1>
-  <span style="font-size:12px;color:var(--muted)">VPS Manager</span>
+  <h1><span class="dot"></span> sshc</h1>
+  <span class="sub">VPS Manager</span>
 </nav>
 <main>
   <div id="msg" class="msg"></div>
+  <div id="toast-container"></div>
 
   <div class="card">
-    <h2>+ 添加服务器</h2>
+    <h2>添加服务器</h2>
     <div class="row">
       <div class="field"><label>名称</label><input id="f_name" placeholder="my-server"></div>
       <div class="field"><label>主机</label><input id="f_host" placeholder="1.2.3.4"></div>
@@ -168,6 +276,15 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function toast(text, type) {
+  var c = document.getElementById('toast-container');
+  var t = document.createElement('div');
+  t.className = 'toast ' + (type||'ok');
+  t.innerHTML = '<span class="toast-dot"></span>' + text;
+  c.appendChild(t);
+  setTimeout(function(){ t.classList.add('out'); setTimeout(function(){ t.remove(); },300); }, 2800);
+}
+
 function setAuth(m) {
   auth_mode = m;
   document.getElementById('bt_key').className = m==='key'?'active':'';
@@ -184,7 +301,6 @@ function setAuth(m) {
   const text = drop.querySelector('.drop-text');
 
   drop.addEventListener('click', function() { file.click(); });
-
   drop.addEventListener('dragover', function(e) { e.preventDefault(); drop.classList.add('drag'); });
   drop.addEventListener('dragleave', function() { drop.classList.remove('drag'); });
   drop.addEventListener('drop', function(e) {
@@ -192,7 +308,6 @@ function setAuth(m) {
     drop.classList.remove('drag');
     handleFile(e.dataTransfer.files[0]);
   });
-
   file.addEventListener('change', function() {
     if (this.files.length) handleFile(this.files[0]);
   });
@@ -230,7 +345,7 @@ async function addProfile() {
   const port = parseInt(document.getElementById('f_port').value) || 22;
   const password = document.getElementById('f_password').value.trim();
 
-  if (!name || !host) return msg('名称和主机不能为空', 'err');
+  if (!name || !host) return toast('名称和主机不能为空', 'err');
 
   var payload = {name:name, host:host, user:user, port:port};
   if (auth_mode === 'key') {
@@ -239,13 +354,13 @@ async function addProfile() {
       payload.key_filename = key_filename;
     }
   } else {
-    if (!password) return msg('请输入密码', 'err');
+    if (!password) return toast('请输入密码', 'err');
     payload.password = password;
   }
 
   var r = await api('POST', '/api/profiles', payload);
   if (r.ok) {
-    msg('已添加: ' + name, 'ok');
+    toast('已添加: ' + name, 'ok');
     document.getElementById('f_name').value = '';
     document.getElementById('f_host').value = '';
     document.getElementById('f_password').value = '';
@@ -257,15 +372,15 @@ async function addProfile() {
     document.getElementById('key_file_input').value = '';
     refresh();
   } else {
-    msg(r.error || '添加失败', 'err');
+    toast(r.error || '添加失败', 'err');
   }
 }
 
 async function deleteProfile(name) {
   if (!confirm('删除服务器 ' + name + '？')) return;
   var r = await api('DELETE', '/api/profiles/' + encodeURIComponent(name));
-  if (r.ok) { msg('已删除: ' + name, 'ok'); refresh(); }
-  else msg(r.error || '删除失败', 'err');
+  if (r.ok) { toast('已删除: ' + name, 'ok'); refresh(); }
+  else toast(r.error || '删除失败', 'err');
 }
 
 async function setDefault(name) {
@@ -302,31 +417,6 @@ function updateRowStatus(name, alive) {
     btn.disabled = false;
   }
 }
-
-async function checkAll() {
-  var rows = document.querySelectorAll('#list tr[data-name]');
-  var tasks = [];
-  rows.forEach(function(row) {
-    var name = row.dataset.name;
-    tasks.push(
-      api('POST', '/api/test/' + encodeURIComponent(name))
-        .then(function(r) { updateRowStatus(name, r.alive); })
-        .catch(function() { updateRowStatus(name, false); })
-    );
-  });
-  await Promise.allSettled(tasks);
-}
-
-document.addEventListener('click', function(e) {
-  var btn = e.target.closest('button[data-action]');
-  if (!btn) return;
-  var name = btn.dataset.name;
-  var action = btn.dataset.action;
-  if (action === 'test') testProfile(name);
-  else if (action === 'delete') deleteProfile(name);
-  else if (action === 'default') setDefault(name);
-  else if (action === 'proxy') openProxyModal(name, btn.dataset.proxy);
-});
 
 // ── Proxy modal ─────────────────────────────────────────────────────
 let proxy_edit_name = '';
@@ -398,36 +488,67 @@ async function saveProxy() {
   if (type === 'http' || type === 'socks5' || type === 'socks4') {
     var host = document.getElementById('proxy_host').value.trim();
     var port = document.getElementById('proxy_port').value.trim();
-    if (!host) return msg('请输入代理主机', 'err');
+    if (!host) return toast('请输入代理主机', 'err');
     proxy_str = buildProxyCommand(type, host, port);
   } else if (type === 'raw') {
     proxy_str = document.getElementById('proxy_raw').value.trim();
-    if (!proxy_str) return msg('请输入 ProxyCommand', 'err');
+    if (!proxy_str) return toast('请输入 ProxyCommand', 'err');
   }
   var r = await api('PUT', '/api/profiles/' + encodeURIComponent(proxy_edit_name), {proxy: proxy_str || null});
   if (r.ok) {
-    msg('代理设置已保存: ' + proxy_edit_name, 'ok');
+    toast('代理设置已保存: ' + proxy_edit_name, 'ok');
     closeProxyModal();
     refresh();
   } else {
-    msg(r.error || '保存失败', 'err');
+    toast(r.error || '保存失败', 'err');
   }
 }
 
 async function clearProxy() {
   var r = await api('PUT', '/api/profiles/' + encodeURIComponent(proxy_edit_name), {proxy: null});
   if (r.ok) {
-    msg('代理已清除: ' + proxy_edit_name, 'ok');
+    toast('代理已清除: ' + proxy_edit_name, 'ok');
     closeProxyModal();
     refresh();
   } else {
-    msg(r.error || '清除失败', 'err');
+    toast(r.error || '清除失败', 'err');
   }
 }
 
 document.getElementById('proxy_type').addEventListener('change', updateProxyFields);
 document.getElementById('proxy_host').addEventListener('input', updateProxyFields);
 document.getElementById('proxy_port').addEventListener('input', updateProxyFields);
+
+// ── Event delegation ───────────────────────────────────────────────
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  var name = btn.dataset.name;
+  var action = btn.dataset.action;
+  if (action === 'test') testProfile(name);
+  else if (action === 'delete') deleteProfile(name);
+  else if (action === 'default') setDefault(name);
+  else if (action === 'proxy') openProxyModal(name, btn.dataset.proxy);
+});
+
+// Close modal on overlay click
+document.getElementById('proxy_modal').addEventListener('click', function(e) {
+  if (e.target === this) closeProxyModal();
+});
+
+async function checkAll() {
+  var rows = document.querySelectorAll('#list tr[data-name]');
+  var tasks = [];
+  rows.forEach(function(row) {
+    var name = row.dataset.name;
+    tasks.push(
+      api('POST', '/api/test/' + encodeURIComponent(name))
+        .then(function(r) { updateRowStatus(name, r.alive); })
+        .catch(function() { updateRowStatus(name, false); })
+    );
+  });
+  await Promise.allSettled(tasks);
+}
 
 async function refresh() {
   var r = await api('GET', '/api/profiles');
@@ -450,8 +571,8 @@ async function refresh() {
       '<td>' +
         '<button class="btn-test" data-action="test" data-name="' + escHtml(n) + '">测试</button>' +
         '<button class="btn-proxy' + (p.proxy ? ' has-proxy' : '') + '" data-action="proxy" data-name="' + escHtml(n) + '" data-proxy="' + escHtml(p.proxy||'') + '" style="margin-left:4px">代理</button>' +
-        (!isDef ? '<button class="btn btn-del" data-action="default" data-name="' + escHtml(n) + '" style="margin-left:4px;font-size:11px;padding:3px 8px;border-color:var(--border);color:var(--muted)">默认</button>' : '') +
-        '<button class="btn btn-del" data-action="delete" data-name="' + escHtml(n) + '" style="margin-left:4px">删除</button>' +
+        (!isDef ? '<button class="btn-ghost" data-action="default" data-name="' + escHtml(n) + '" style="margin-left:4px">默认</button>' : '') +
+        '<button class="btn-del" data-action="delete" data-name="' + escHtml(n) + '" style="margin-left:4px">删除</button>' +
       '</td></tr>';
   }
   html += '</table>';
@@ -509,7 +630,7 @@ def check_alive(name, cfg):
             return False
         try:
             port = int(open(port_file).read().strip())
-            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s = socket.create_connection(("127.0.0.1", port), timeout=20)
         except Exception:
             return False
     else:
@@ -518,7 +639,7 @@ def check_alive(name, cfg):
             return False
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(5)
+            s.settimeout(20)
             s.connect(daemon_sock)
         except Exception:
             return False
