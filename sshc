@@ -1,44 +1,80 @@
 #!/bin/bash
-# sshc — SSH multiplexing CLI (shell client, zero startup overhead)
-# Daemon: C | Client: pure bash + nc
+# sshc — SSH multiplexing CLI (cross-platform shell client)
+# Daemon: C (cross-platform) | Client: pure bash + nc
 
 set -e
 APP_DIR="${HOME}/.sshc"
 PROFILES_FILE="${APP_DIR}/profiles.json"
-DAEMON_SOCK="${APP_DIR}/daemon.sock"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
-# Auto-discover or compile daemon binary
+# ── platform detection ─────────────────────────────────────────────
+IS_WIN=0
+case "$(uname -s 2>/dev/null || echo Windows)" in
+    CYGWIN*|MINGW*|MSYS*|Windows) IS_WIN=1 ;;
+esac
+
+if [ "$IS_WIN" -eq 1 ]; then
+    DAEMON_NAME="sshc-daemon.exe"
+    DAEMON_SOCK=""  # unused on Windows — use TCP port file
+else
+    DAEMON_NAME="sshc-daemon"
+    DAEMON_SOCK="${APP_DIR}/daemon.sock"
+fi
+
+# ── auto-discover or compile daemon binary ──────────────────────────
 _find_or_build() {
     local name="$1"
     local src="${2:-}"
-    # Search install paths for existing binary
     for dir in "$SCRIPT_DIR" \
                "$HOME/.claude/skills/sshc" \
                "$HOME/.agents/skills/sshc"; do
-        if [ -x "$dir/$name" ]; then echo "$dir/$name"; return 0; fi
+        if [ -x "$dir/$name" ] || [ -f "$dir/$name" ]; then
+            echo "$dir/$name"; return 0
+        fi
     done
-    # Auto-compile from source if available
     if [ -n "$src" ] && [ -f "$SCRIPT_DIR/$src" ]; then
         echo "Building $name from source..." >&2
-        cc -O2 -o "$SCRIPT_DIR/$name" "$SCRIPT_DIR/$src" && \
+        local libs=""
+        [ "$IS_WIN" -eq 1 ] && libs="-lws2_32"
+        cc -O2 -o "$SCRIPT_DIR/$name" "$SCRIPT_DIR/$src" $libs && \
             { echo "$SCRIPT_DIR/$name"; return 0; }
     fi
     echo "$SCRIPT_DIR/$name"
 }
-DAEMON_BIN="$(_find_or_build sshc-daemon sshc-daemon.c)"
+DAEMON_BIN="$(_find_or_build $DAEMON_NAME sshc-daemon.c)"
 WEB_BIN="$(_find_or_build sshc-web)"
 
+# ── daemon alive check ──────────────────────────────────────────────
+_daemon_alive() {
+    if [ "$IS_WIN" -eq 1 ]; then
+        local pf="${APP_DIR}/daemon.port"
+        [ -f "$pf" ] || return 1
+        local port
+        port=$(cat "$pf" 2>/dev/null)
+        [ -n "$port" ] && nc -z 127.0.0.1 "$port" 2>/dev/null
+    else
+        [ -S "$DAEMON_SOCK" ]
+    fi
+}
+
+# ── IPC send ────────────────────────────────────────────────────────
 send() {
-    if [ ! -S "$DAEMON_SOCK" ]; then
+    if ! _daemon_alive; then
         echo '{"ok":false,"error":"daemon not running. Start with: sshc daemon"}' >&2
         return 1
     fi
-    printf '%s\n' "$1" | nc -U "$DAEMON_SOCK" 2>/dev/null
+    if [ "$IS_WIN" -eq 1 ]; then
+        local port
+        port=$(cat "${APP_DIR}/daemon.port" 2>/dev/null)
+        printf '%s\n' "$1" | nc -w 5 127.0.0.1 "$port" 2>/dev/null
+    else
+        printf '%s\n' "$1" | nc -U "$DAEMON_SOCK" 2>/dev/null
+    fi
 }
 
+# ── commands ────────────────────────────────────────────────────────
 cmd_daemon() {
-    if [ -S "$DAEMON_SOCK" ]; then
+    if _daemon_alive; then
         echo "sshc daemon already running"
         return 0
     fi
@@ -46,10 +82,10 @@ cmd_daemon() {
     echo "Starting sshc daemon..."
     "$DAEMON_BIN" &
     sleep 1
-    if [ -S "$DAEMON_SOCK" ]; then
+    if _daemon_alive; then
         echo "sshc daemon ready"
     else
-        echo "ERROR: daemon failed to start"
+        echo "ERROR: daemon failed to start" >&2
         return 1
     fi
 }
@@ -60,41 +96,32 @@ cmd_exec() {
     local timeout="${3:-30}"
 
     if [ -z "$profile" ] || [ -z "$cmd" ]; then
-        echo "Usage: sshc exec <profile> <command>" >&2
+        echo "Usage: sshc exec <profile> <command> [timeout]" >&2
         return 1
     fi
 
-    # 一次 python3 调用完成：JSON 编码 cmd → 发送 → 接收 → 解析 → 输出
+    # python3 for JSON encoding (command may contain special chars)
+    local req
+    req=$(python3 -c "
+import json, sys
+print(json.dumps({'action':'exec','profile':'$profile','cmd':sys.argv[1],'timeout':$timeout}))
+" "$cmd")
+    local resp
+    resp=$(send "$req")
+
     python3 -c "
-import sys, json, subprocess, os
-
-sock = os.path.expanduser('$DAEMON_SOCK')
-req = json.dumps({'action':'exec','profile':'$profile','cmd':sys.argv[1],'timeout':$timeout})
-
-import socket
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.settimeout($((timeout + 5)))
-s.connect(sock)
-s.sendall((req + '\n').encode())
-data = b''
-while True:
-    chunk = s.recv(65536)
-    if not chunk: break
-    data += chunk
-    if b'\n' in data: break
-s.close()
-
-resp = json.loads(data.decode().strip())
+import sys, json
+resp = json.load(sys.stdin)
 if resp.get('ok'):
-    out = resp.get('stdout', '')
-    err = resp.get('stderr', '')
+    out = resp.get('stdout','')
+    err = resp.get('stderr','')
     if out: sys.stdout.write(out)
     if err: sys.stderr.write(err)
     sys.exit(0)
 else:
-    print('ERROR: ' + resp.get('error', ''), file=sys.stderr)
+    print('ERROR: ' + resp.get('error',''), file=sys.stderr)
     sys.exit(resp.get('exit', 1))
-" "$cmd"
+" <<< "$resp"
 }
 
 cmd_health() {
@@ -130,11 +157,11 @@ else:
 cmd_profiles() {
     local resp
     resp=$(send '{"action":"profiles"}')
-    python3 -c "
+    echo "$resp" | python3 -c "
 import json, sys, os
 cfg = json.load(open(os.path.expanduser('$PROFILES_FILE')))
 default = cfg.get('default','')
-resp = json.loads('''$resp''')
+resp = json.load(sys.stdin)
 print(f'{\"NAME\":<20} {\"HOST\":<22} {\"USER\":<10} {\"PORT\":<6} {\"STATUS\"}')
 print('-' * 70)
 for name in sorted(resp.keys()):
@@ -146,12 +173,24 @@ for name in sorted(resp.keys()):
 }
 
 cmd_add() {
-    local name="$1"
-    local target="$2"
-    local key="$3"
-    local port="${4:-22}"
+    local name="" target="" key="" port="22" proxy=""
 
-    if [ -z "$name" ] || [ -z "$target" ] || [ -z "$key" ]; then
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -i) key="$2"; shift 2 ;;
+            -p) port="$2"; shift 2 ;;
+            --proxy) proxy="$2"; shift 2 ;;
+            -*) echo "Unknown flag: $1" >&2; return 1 ;;
+            *)
+                if [ -z "$name" ]; then name="$1"
+                elif [ -z "$target" ]; then target="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$name" ] || [ -z "$target" ]; then
         echo "Usage: sshc add <name> <user@host> -i <key> [-p <port>]" >&2
         return 1
     fi
@@ -161,7 +200,7 @@ cmd_add() {
         return 1
     fi
 
-    if [ ! -f "$key" ]; then
+    if [ -n "$key" ] && [ ! -f "$key" ]; then
         echo "ERROR: key file not found: $key" >&2
         return 1
     fi
@@ -175,7 +214,7 @@ f = os.path.expanduser('$PROFILES_FILE')
 os.makedirs(os.path.expanduser('$APP_DIR'), exist_ok=True)
 cfg = json.load(open(f)) if os.path.exists(f) else {}
 cfg.setdefault('servers', {})['$name'] = {
-    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port
+    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port, 'proxy': '''$proxy'''
 }
 if not cfg.get('default'):
     cfg['default'] = '$name'
@@ -196,7 +235,7 @@ cfg = json.load(open(f))
 if '$name' in cfg.get('servers',{}):
     del cfg['servers']['$name']
     if cfg.get('default') == '$name':
-        cfg['default'] = next(iter(cfg['servers'])) if cfg['servers'] else None
+        cfg['default'] = next(iter(cfg['servers'])) if cfg['servers'] else ''
     json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
     os.replace(f+'.tmp', f)
     print(f\"Removed profile '$name'\")
@@ -236,7 +275,7 @@ cmd_web() {
     python3 "$WEB_BIN" -p "$port"
 }
 
-# --- main ---
+# ── main ────────────────────────────────────────────────────────────
 case "${1:-}" in
     daemon)   cmd_daemon ;;
     exec)     shift; cmd_exec "$@" ;;

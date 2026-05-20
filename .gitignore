@@ -1,3 +1,4 @@
 sshc-daemon
+sshc-daemon.exe
 *.o
 .DS_Store
