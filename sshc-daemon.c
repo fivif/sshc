@@ -697,6 +697,8 @@ static void handle_request(socket_t fd) {
         get_sock(profiles[idx].name, sock, sizeof(sock));
         snprintf(tgt, sizeof(tgt), "%s@%s", profiles[idx].user, profiles[idx].host);
 
+        ensure_master(idx);
+
         char valid_err[256];
         if (validate_command(cmd_buf, profiles[idx].allow, profiles[idx].deny,
                              valid_err, sizeof(valid_err)) != 0) {
