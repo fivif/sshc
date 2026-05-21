@@ -14,6 +14,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <stdarg.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -48,6 +49,10 @@
   #define WEXITSTATUS(s) ((s) >> 8)
 
   static volatile int g_shutdown = 0;
+  static CRITICAL_SECTION g_profile_lock;
+  #define PROFILE_LOCK()   EnterCriticalSection(&g_profile_lock)
+  #define PROFILE_UNLOCK() LeaveCriticalSection(&g_profile_lock)
+  #define PROFILE_LOCK_INIT() InitializeCriticalSection(&g_profile_lock)
 
   #define stat _stat
 
@@ -99,6 +104,9 @@
   }
 
   extern char **environ;
+  #define PROFILE_LOCK()   do {} while(0)
+  #define PROFILE_UNLOCK() do {} while(0)
+  #define PROFILE_LOCK_INIT() do {} while(0)
 #endif
 
 #define MAX_PROFILES   32
@@ -247,7 +255,7 @@ static int ensure_master(int idx) {
 static int ssh_exec(const char *sock, const char *target,
                      const char *command, int timeout,
                      char *out, size_t out_sz, int use_pass, const char *pass,
-                     const char *key, const char *proxy) {
+                     const char *key, const char *proxy, int port) {
     HANDLE hRead, hWrite;
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
@@ -262,9 +270,10 @@ static int ssh_exec(const char *sock, const char *target,
     }
     off += snprintf(cmdline + off, sizeof(cmdline) - off,
         "ssh -o ControlPath=%s "
+        "-o Port=%d "
         "-o ConnectTimeout=%d "
         "-o StrictHostKeyChecking=accept-new ",
-        sock, timeout > 0 ? timeout : 10);
+        sock, port, timeout > 0 ? timeout : 10);
     if (has_proxy) {
         off += snprintf(cmdline + off, sizeof(cmdline) - off,
             "-o ProxyCommand=\"%s\" ", proxy);
@@ -401,13 +410,14 @@ static int ensure_master(int idx) {
 static int ssh_exec(const char *sock, const char *target,
                      const char *command, int timeout,
                      char *out, size_t out_sz, int use_pass, const char *pass,
-                     const char *key, const char *proxy) {
+                     const char *key, const char *proxy, int port) {
     int pipefd[2];
     if (pipe(pipefd) < 0) return -1;
 
-    char ctl[256], cto[64];
+    char ctl[256], cto[64], cport[32];
     snprintf(ctl, sizeof(ctl), "ControlPath=%s", sock);
     snprintf(cto, sizeof(cto), "ConnectTimeout=%d", timeout > 0 ? timeout : 10);
+    snprintf(cport, sizeof(cport), "Port=%d", port > 0 ? port : 22);
 
     char proxy_opt[640];
     int has_proxy = proxy && proxy[0];
@@ -422,6 +432,7 @@ static int ssh_exec(const char *sock, const char *target,
     argv[argc++] = "ssh";
     argv[argc++] = "-o"; argv[argc++] = ctl;
     argv[argc++] = "-o"; argv[argc++] = cto;
+    argv[argc++] = "-o"; argv[argc++] = cport;
     argv[argc++] = "-o"; argv[argc++] = "StrictHostKeyChecking=accept-new";
     if (has_proxy) {
         snprintf(proxy_opt, sizeof(proxy_opt), "ProxyCommand=%s", proxy);
@@ -539,10 +550,12 @@ static int load_profiles(void) {
 /* ─── Request handler ──────────────────────────────────────────────── */
 
 static void maybe_reload_config(void) {
+    PROFILE_LOCK();
     struct stat st;
     if (stat(profiles_path, &st) == 0 && st.st_mtime > config_mtime) {
         if (load_profiles() == 0) config_mtime = st.st_mtime;
     }
+    PROFILE_UNLOCK();
 }
 
 #ifdef _WIN32
@@ -554,8 +567,17 @@ static int match_glob(const char *pattern, const char *str) {
         size_t len = end ? (size_t)(end - p) : strlen(p);
         if (len >= sizeof(buf)) len = sizeof(buf) - 1;
         memcpy(buf, p, len); buf[len] = 0;
-        /* simple substring match — covers common allow/deny patterns */
-        if (strstr(str, buf)) return 1;
+        int anchored_start = (buf[0] == '^');
+        int anchored_end   = (len > 0 && buf[len-1] == '$');
+        char *sub = buf;
+        if (anchored_start) sub++;
+        if (anchored_end) buf[len-1] = 0;
+        const char *found = strstr(str, sub);
+        if (found) {
+            if (anchored_start && found != str) { if (!end) break; p = end + 1; continue; }
+            if (anchored_end && found + strlen(sub) != str + strlen(str)) { if (!end) break; p = end + 1; continue; }
+            return 1;
+        }
         if (!end) break;
         p = end + 1;
     }
@@ -584,6 +606,19 @@ static int validate_command(const char *cmd, const char *allow, const char *deny
     if (allow && allow[0] && !match_glob(allow, cmd)) {
         snprintf(err, err_sz, "command does not match allow pattern"); return -1;
     }
+    return 0;
+}
+
+static int safe_append(char **pp, char *end, const char *fmt, ...) {
+    size_t rem = end - *pp;
+    if (rem <= 1) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(*pp, rem, fmt, ap);
+    va_end(ap);
+    if (w < 0) { **pp = 0; return -1; }
+    if ((size_t)w >= rem) { *pp = end - 1; return -1; }
+    *pp += w;
     return 0;
 }
 
@@ -641,11 +676,11 @@ static void handle_request(socket_t fd) {
 
     if (!strcmp(action, "health")) {
         if (!profile[0] || !strcmp(profile, "*")) {
-            char *p = resp;
-            p += snprintf(p, sizeof(resp) - (p - resp), "{");
+            char *p = resp, *end = resp + sizeof(resp);
+            safe_append(&p, end, "{");
             int first = 1;
             for (int i = 0; i < profile_count; i++) {
-                if (!first) p += snprintf(p, sizeof(resp) - (p - resp), ",");
+                if (!first) { if (safe_append(&p, end, ",") < 0) break; }
                 first = 0;
                 ensure_master(i);
                 char sock[512], tgt[256];
@@ -654,12 +689,12 @@ static void handle_request(socket_t fd) {
                 char out[256];
                 int st = ssh_exec(sock, tgt, "echo ok", 5, out, sizeof(out),
                     profiles[i].password[0] != 0, profiles[i].password,
-                    profiles[i].key, profiles[i].proxy);
+                    profiles[i].key, profiles[i].proxy, profiles[i].port);
                 int alive = WIFEXITED(st) && WEXITSTATUS(st) == 0;
-                p += snprintf(p, sizeof(resp) - (p - resp),
-                    "\"%s\":{\"alive\":%s}", profiles[i].name, alive ? "true" : "false");
+                if (safe_append(&p, end, "\"%s\":{\"alive\":%s}",
+                    profiles[i].name, alive ? "true" : "false") < 0) break;
             }
-            p += snprintf(p, sizeof(resp) - (p - resp), "}");
+            safe_append(&p, end, "}");
         } else {
             int idx = -1;
             for (int i = 0; i < profile_count; i++)
@@ -674,7 +709,7 @@ static void handle_request(socket_t fd) {
                 char out[256];
                 int st = ssh_exec(sock, tgt, "echo ok", 5, out, sizeof(out),
                     profiles[idx].password[0] != 0, profiles[idx].password,
-                    profiles[idx].key, profiles[idx].proxy);
+                    profiles[idx].key, profiles[idx].proxy, profiles[idx].port);
                 int alive = WIFEXITED(st) && WEXITSTATUS(st) == 0;
                 snprintf(resp, sizeof(resp),
                     "{\"profile\":\"%s\",\"alive\":%s}", profile, alive ? "true" : "false");
@@ -710,14 +745,14 @@ static void handle_request(socket_t fd) {
         char stdout_buf[BUF_SIZE] = {0};
         int use_pass = profiles[idx].password[0] != 0;
         int st = ssh_exec(sock, tgt, cmd_buf, timeout, stdout_buf, sizeof(stdout_buf),
-            use_pass, profiles[idx].password, profiles[idx].key, profiles[idx].proxy);
+            use_pass, profiles[idx].password, profiles[idx].key, profiles[idx].proxy, profiles[idx].port);
 
         if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0)) {
             unlink(sock);
             ensure_master(idx);
             memset(stdout_buf, 0, sizeof(stdout_buf));
             st = ssh_exec(sock, tgt, cmd_buf, timeout, stdout_buf, sizeof(stdout_buf),
-                use_pass, profiles[idx].password, profiles[idx].key, profiles[idx].proxy);
+                use_pass, profiles[idx].password, profiles[idx].key, profiles[idx].proxy, profiles[idx].port);
         }
         int ok = WIFEXITED(st) && WEXITSTATUS(st) == 0;
         int exit_code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
@@ -730,21 +765,23 @@ static void handle_request(socket_t fd) {
         goto respond;
     }
     else if (!strcmp(action, "profiles")) {
-        char *p = resp;
-        p += snprintf(p, sizeof(resp) - (p - resp), "{");
+        char *p = resp, *end = resp + sizeof(resp);
+        safe_append(&p, end, "{");
         for (int i = 0; i < profile_count; i++) {
-            if (i > 0) p += snprintf(p, sizeof(resp) - (p - resp), ",");
+            if (i > 0) { if (safe_append(&p, end, ",") < 0) break; }
             char sock[512], tgt[256];
             get_sock(profiles[i].name, sock, sizeof(sock));
             snprintf(tgt, sizeof(tgt), "%s@%s", profiles[i].user, profiles[i].host);
             int alive = (ssh_check(sock, tgt, profiles[i].proxy) == 0);
             int is_def = !strcmp(profiles[i].name, default_profile);
-            p += snprintf(p, sizeof(resp) - (p - resp),
+            char esc_proxy[1024];
+            json_esc(profiles[i].proxy, esc_proxy, sizeof(esc_proxy));
+            if (safe_append(&p, end,
                 "\"%s\":{\"host\":\"%s\",\"user\":\"%s\",\"port\":%d,\"alive\":%s,\"default\":%s,\"proxy\":\"%s\"}",
                 profiles[i].name, profiles[i].host, profiles[i].user, profiles[i].port,
-                alive ? "true" : "false", is_def ? "true" : "false", profiles[i].proxy);
+                alive ? "true" : "false", is_def ? "true" : "false", esc_proxy) < 0) break;
         }
-        p += snprintf(p, sizeof(resp) - (p - resp), "}");
+        safe_append(&p, end, "}");
     }
     else if (!strcmp(action, "reconnect")) {
         int idx = -1;
@@ -851,6 +888,8 @@ static int run_daemon(void) {
     }
 
     printf("sshc daemon ready (127.0.0.1:%d)\n", daemon_port);
+
+    PROFILE_LOCK_INIT();
 
     if (default_profile[0]) {
         for (int i = 0; i < profile_count; i++) {

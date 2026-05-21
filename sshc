@@ -104,8 +104,8 @@ cmd_exec() {
     local req
     req=$(python3 -c "
 import json, sys
-print(json.dumps({'action':'exec','profile':'$profile','cmd':sys.argv[1],'timeout':$timeout}))
-" "$cmd")
+print(json.dumps({'action':'exec','profile':sys.argv[1],'cmd':sys.argv[2],'timeout':int(sys.argv[3])}))
+" "$profile" "$cmd" "$timeout")
     local resp
     resp=$(send "$req")
 
@@ -141,17 +141,18 @@ import sys, json, os
 resp = json.load(sys.stdin)
 cfg = json.load(open(os.path.expanduser('$PROFILES_FILE')))
 default = cfg.get('default','')
+profile = sys.argv[1] if len(sys.argv) > 1 else ''
 
-if '$profile' != '':
+if profile:
     alive = resp.get('alive', False)
     mark = '●' if alive else '○'
-    print(f'{mark} $profile: {\"alive\" if alive else \"dead\"}')
+    print(f'{mark} {profile}: {\"alive\" if alive else \"dead\"}')
 else:
     for name, r in sorted(resp.items()):
         mark = '●' if r.get('alive') else '○'
         tag = ' (default)' if name == default else ''
         print(f'{mark} {name}{tag}: {\"alive\" if r.get(\"alive\") else \"dead\"}')
-" <<< "$resp"
+" "$profile" <<< "$resp"
 }
 
 cmd_profiles() {
@@ -211,57 +212,59 @@ cmd_add() {
     local host="${target#*@}"
 
     python3 -c "
-import json, os
+import json, os, sys
 f = os.path.expanduser('$PROFILES_FILE')
 os.makedirs(os.path.expanduser('$APP_DIR'), exist_ok=True)
 cfg = json.load(open(f)) if os.path.exists(f) else {}
-cfg.setdefault('servers', {})['$name'] = {
-    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port,
-    'proxy': '''$proxy''', 'allow': '''$allow''', 'deny': '''$deny'''
+cfg.setdefault('servers', {})[sys.argv[1]] = {
+    'host': sys.argv[2], 'user': sys.argv[3], 'key': sys.argv[4], 'port': int(sys.argv[5]),
+    'proxy': sys.argv[6], 'allow': sys.argv[7], 'deny': sys.argv[8]
 }
 if not cfg.get('default'):
-    cfg['default'] = '$name'
+    cfg['default'] = sys.argv[1]
 json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
 os.replace(f+'.tmp', f)
 os.chmod(f, 0o600)
-print(f\"Added profile '$name': $user@$host\")
-"
+print(f\"Added profile '{sys.argv[1]}': {sys.argv[3]}@{sys.argv[2]}\")
+" "$name" "$host" "$user" "$key" "$port" "$proxy" "$allow" "$deny"
 }
 
 cmd_remove() {
     local name="$1"
     [ -z "$name" ] && { echo "Usage: sshc remove <name>" >&2; return 1; }
     python3 -c "
-import json, os
+import json, os, sys
 f = os.path.expanduser('$PROFILES_FILE')
 cfg = json.load(open(f))
-if '$name' in cfg.get('servers',{}):
-    del cfg['servers']['$name']
-    if cfg.get('default') == '$name':
+name = sys.argv[1]
+if name in cfg.get('servers',{}):
+    del cfg['servers'][name]
+    if cfg.get('default') == name:
         cfg['default'] = next(iter(cfg['servers'])) if cfg['servers'] else ''
     json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
     os.replace(f+'.tmp', f)
-    print(f\"Removed profile '$name'\")
+    print(f\"Removed profile '{name}'\")
 else:
-    print(f\"ERROR: profile '$name' not found\")
-" 2>/dev/null
+    print(f\"ERROR: profile '{name}' not found\")
+" "$name" 2>/dev/null
 }
 
 cmd_default() {
     local name="$1"
     [ -z "$name" ] && { echo "Usage: sshc default <name>" >&2; return 1; }
     python3 -c "
-import json, os
+import json, os, sys
 f = os.path.expanduser('$PROFILES_FILE')
 cfg = json.load(open(f))
-if '$name' in cfg.get('servers',{}):
-    cfg['default'] = '$name'
+name = sys.argv[1]
+if name in cfg.get('servers',{}):
+    cfg['default'] = name
     json.dump(cfg, open(f+'.tmp', 'w'), indent=2)
     os.replace(f+'.tmp', f)
-    print(f\"Default profile: $name\")
+    print(f\"Default profile: {name}\")
 else:
-    print(f\"ERROR: profile '$name' not found\")
-" 2>/dev/null
+    print(f\"ERROR: profile '{name}' not found\")
+" "$name" 2>/dev/null
 }
 
 cmd_reconnect() {
@@ -287,30 +290,31 @@ import json, os, sys, subprocess
 
 f = os.path.expanduser('$PROFILES_FILE')
 cfg = json.load(open(f))
-s = cfg['servers'].get('$profile')
+s = cfg['servers'].get(sys.argv[1])
 if not s: sys.exit('ERROR: profile not found')
 
-sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + '$profile'
+sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + sys.argv[1]
 target = s['user'] + '@' + s['host']
 
 opts = ['-o', 'ControlPath=' + sock, '-o', 'Port=' + str(s.get('port',22)),
         '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=30']
-if s.get('key'): opts += ['-i', os.path.expanduser(s['key'])]
+if not s.get('password') and s.get('key'):
+    opts += ['-i', os.path.expanduser(s['key'])]
 if s.get('proxy'): opts += ['-o', 'ProxyCommand=' + s['proxy']]
 
-local, remote = '$local_path', '$remote_path'
+local, remote = sys.argv[2], sys.argv[3]
+prefix = ['sshpass', '-p', s['password']] if s.get('password') else []
 
 if os.path.isdir(local):
     p1 = subprocess.Popen(['tar', 'czf', '-', '-C', os.path.dirname(local), os.path.basename(local)],
                           stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(['ssh'] + opts + [target, 'mkdir -p ' + remote + '; tar xzf - -C ' + remote],
+    p2 = subprocess.Popen(prefix + ['ssh'] + opts + [target, 'mkdir -p ' + remote + '; tar xzf - -C ' + remote],
                           stdin=p1.stdout)
     p1.stdout.close()
     sys.exit(p2.wait())
 else:
-    subprocess.run(['sftp', '-b', '-'] + opts + [target],
-                   input=('put ' + local + ' ' + remote + '\n').encode())
-"
+    subprocess.run(prefix + ['scp'] + opts + [local, target + ':' + remote])
+" "$profile" "$local_path" "$remote_path"
 }
 
 cmd_download() {
@@ -325,30 +329,31 @@ import json, os, sys, subprocess
 
 f = os.path.expanduser('$PROFILES_FILE')
 cfg = json.load(open(f))
-s = cfg['servers'].get('$profile')
+s = cfg['servers'].get(sys.argv[1])
 if not s: sys.exit('ERROR: profile not found')
 
-sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + '$profile'
+sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + sys.argv[1]
 target = s['user'] + '@' + s['host']
 
 opts = ['-o', 'ControlPath=' + sock, '-o', 'Port=' + str(s.get('port',22)),
         '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=30']
-if s.get('key'): opts += ['-i', os.path.expanduser(s['key'])]
+if not s.get('password') and s.get('key'):
+    opts += ['-i', os.path.expanduser(s['key'])]
 if s.get('proxy'): opts += ['-o', 'ProxyCommand=' + s['proxy']]
 
-remote, local = '$remote_path', '$local_path'
+remote, local = sys.argv[2], sys.argv[3]
+prefix = ['sshpass', '-p', s['password']] if s.get('password') else []
 
 os.makedirs(os.path.dirname(local) or '.', exist_ok=True)
 # check if remote is a directory → tar pipe
-check = subprocess.run(['ssh'] + opts + [target, 'test -d ' + remote + ' && echo DIR || echo FILE'],
+check = subprocess.run(prefix + ['ssh'] + opts + [target, 'test -d ' + remote + ' && echo DIR || echo FILE'],
                        capture_output=True, text=True)
 if 'DIR' in check.stdout:
-    subprocess.run(['ssh'] + opts + [target, 'tar czf - -C ' + remote + ' .'],
+    subprocess.run(prefix + ['ssh'] + opts + [target, 'tar czf - -C ' + remote + ' .'],
                    stdout=open(local, 'wb'))
 else:
-    subprocess.run(['sftp', '-b', '-'] + opts + [target],
-                   input=('get ' + remote + ' ' + local + '\n').encode())
-"
+    subprocess.run(prefix + ['scp'] + opts + [target + ':' + remote, local])
+" "$profile" "$remote_path" "$local_path"
     # sftp exits 0 on success; tar pipe may return non-zero on empty dirs
     return 0
 }
