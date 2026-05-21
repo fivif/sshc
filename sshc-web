@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """sshc-web — Web UI + REST API for ~/.sshc/profiles.json
+Copyright (c) 2025-2026 ZAY — MIT License
 Usage: python3 sshc-web [-p port]
 Default port: 17375
 """

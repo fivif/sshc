@@ -1,5 +1,6 @@
 #!/bin/bash
 # sshc — SSH multiplexing CLI (cross-platform shell client)
+# Copyright (c) 2025-2026 ZAY — MIT License
 # Daemon: C (cross-platform) | Client: pure bash + nc
 
 set -e

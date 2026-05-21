@@ -1,5 +1,7 @@
 /*
  * sshc-daemon.c — SSH multiplexing daemon (cross-platform)
+ * Copyright (c) 2025-2026 ZAY — MIT License
+ *
  * Build: cc -O2 -o sshc-daemon sshc-daemon.c          (Unix)
  *        cl /O2 /Fe:sshc-daemon.exe sshc-daemon.c ws2_32.lib  (Windows MSVC)
  *        x86_64-w64-mingw32-gcc -O2 -o sshc-daemon.exe sshc-daemon.c -lws2_32  (cross)

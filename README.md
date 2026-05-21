@@ -2,6 +2,8 @@
 
 # sshc — 让本地 AI Agent 在线管理你的服务器
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 装上这个 skill，你的 AI Agent 就能直接操作远程服务器。不用记命令，不用配环境，说人话就行。
 
 ```bash
@@ -97,7 +99,7 @@ Windows 额外需要 `ws2_32`（系统自带，MinGW/MSVC 自动链接）。
 
 ## License
 
-MIT
+MIT — 详见 [LICENSE](LICENSE)
 
 ## 致谢
 

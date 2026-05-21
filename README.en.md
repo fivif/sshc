@@ -2,6 +2,8 @@
 
 # sshc — Let Your Local AI Agent Manage Your Servers
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Install this skill and your AI Agent can operate remote servers directly. No commands to memorize, no environment to configure — just talk naturally.
 
 ```bash
@@ -97,7 +99,7 @@ Windows additionally requires `ws2_32` (system library, auto-linked by MinGW/MSV
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
 
 ## Acknowledgments
 
