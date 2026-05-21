@@ -207,6 +207,10 @@ tr:hover td{background:rgba(99,102,241,.04)}
       <div class="field"><label>端口</label><input id="f_port" value="22"></div>
     </div>
     <div class="row">
+      <div class="field"><label>命令白名单 (正则)</label><input id="f_allow" placeholder="^(ls|df|uptime).*"></div>
+      <div class="field"><label>命令黑名单 (正则)</label><input id="f_deny" placeholder=".*rm -rf.*"></div>
+    </div>
+    <div class="row">
       <div class="field"><label>用户名</label><input id="f_user" value="root"></div>
       <div class="field" style="flex:2">
         <label>认证方式</label>
@@ -233,6 +237,41 @@ tr:hover td{background:rgba(99,102,241,.04)}
     <div id="list"></div>
   </div>
 
+  <div id="upload_modal" class="modal-overlay">
+    <div class="modal-box">
+      <h3>上传文件 — <span id="upload_modal_name"></span></h3>
+      <div class="field"><label>远程路径</label><input id="upload_remote" placeholder="/opt/file.tar.gz"></div>
+      <div class="field" style="margin-top:12px"><label>选择文件</label>
+        <div id="upload_drop" class="drop-zone">
+          <span class="drop-icon">📁</span>
+          <span class="drop-text">拖入文件 或 点击选择</span>
+          <span class="drop-name"></span>
+        </div>
+        <input type="file" id="upload_file_input" style="display:none">
+      </div>
+      <div id="upload_progress" style="display:none;margin-top:12px">
+        <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+          <div id="upload_bar" style="background:var(--accent);height:100%;width:0%;transition:width .3s var(--ease)"></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px" id="upload_status"></div>
+      </div>
+      <div class="modal-actions" style="margin-top:24px">
+        <button class="btn btn-cancel" onclick="closeUploadModal()">取消</button>
+        <button class="btn btn-save" id="upload_btn" onclick="doUpload()">上传</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="download_modal" class="modal-overlay">
+    <div class="modal-box">
+      <h3>下载文件 — <span id="download_modal_name"></span></h3>
+      <div class="field"><label>远程路径</label><input id="download_remote" placeholder="/var/log/syslog"></div>
+      <div class="modal-actions" style="margin-top:24px">
+        <button class="btn btn-cancel" onclick="closeDownloadModal()">取消</button>
+        <button class="btn btn-save" onclick="doDownload()">下载</button>
+      </div>
+    </div>
+  </div>
   <div id="proxy_modal" class="modal-overlay">
     <div class="modal-box">
       <h3>代理设置 — <span id="proxy_modal_name"></span></h3>
@@ -344,10 +383,14 @@ async function addProfile() {
   const user = document.getElementById('f_user').value.trim();
   const port = parseInt(document.getElementById('f_port').value) || 22;
   const password = document.getElementById('f_password').value.trim();
+  const allow = document.getElementById('f_allow').value.trim();
+  const deny = document.getElementById('f_deny').value.trim();
 
   if (!name || !host) return toast('名称和主机不能为空', 'err');
 
   var payload = {name:name, host:host, user:user, port:port};
+  if (allow) payload.allow = allow;
+  if (deny) payload.deny = deny;
   if (auth_mode === 'key') {
     if (key_content) {
       payload.key_content = key_content;
@@ -529,11 +572,136 @@ document.addEventListener('click', function(e) {
   else if (action === 'delete') deleteProfile(name);
   else if (action === 'default') setDefault(name);
   else if (action === 'proxy') openProxyModal(name, btn.dataset.proxy);
+  else if (action === 'upload') openUploadModal(name);
+  else if (action === 'download') openDownloadModal(name);
 });
 
 // Close modal on overlay click
 document.getElementById('proxy_modal').addEventListener('click', function(e) {
   if (e.target === this) closeProxyModal();
+});
+
+// ── Upload / Download ────────────────────────────────────────────────
+let upload_file_data = null;
+let upload_file_name = '';
+let upload_server = '';
+
+(function() {
+  const drop = document.getElementById('upload_drop');
+  const file = document.getElementById('upload_file_input');
+  const name = drop.querySelector('.drop-name');
+  const text = drop.querySelector('.drop-text');
+
+  drop.addEventListener('click', function() { file.click(); });
+  drop.addEventListener('dragover', function(e) { e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave', function() { drop.classList.remove('drag'); });
+  drop.addEventListener('drop', function(e) {
+    e.preventDefault(); drop.classList.remove('drag');
+    var f = e.dataTransfer.files[0];
+    if (f) loadUploadFile(f);
+  });
+  file.addEventListener('change', function() {
+    if (this.files.length) loadUploadFile(this.files[0]);
+  });
+
+  function loadUploadFile(f) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      upload_file_data = e.target.result.split(',')[1] || e.target.result;
+      upload_file_name = f.name;
+      drop.classList.add('has');
+      name.textContent = f.name;
+      text.textContent = '已选择 — 点击可重新选择';
+    };
+    reader.readAsDataURL(f);
+  }
+})();
+
+function openUploadModal(server) {
+  upload_server = server;
+  upload_file_data = null; upload_file_name = '';
+  document.getElementById('upload_modal_name').textContent = server;
+  document.getElementById('upload_remote').value = '';
+  document.getElementById('upload_progress').style.display = 'none';
+  var drop = document.getElementById('upload_drop');
+  drop.classList.remove('has');
+  drop.querySelector('.drop-name').textContent = '';
+  drop.querySelector('.drop-text').textContent = '拖入文件 或 点击选择';
+  document.getElementById('upload_file_input').value = '';
+  document.getElementById('upload_modal').classList.add('open');
+}
+
+function closeUploadModal() {
+  document.getElementById('upload_modal').classList.remove('open');
+}
+
+async function doUpload() {
+  var remote = document.getElementById('upload_remote').value.trim();
+  if (!remote) return toast('请输入远程路径', 'err');
+  if (!upload_file_data) return toast('请选择文件', 'err');
+
+  var bar = document.getElementById('upload_bar');
+  var status = document.getElementById('upload_status');
+  document.getElementById('upload_progress').style.display = '';
+  bar.style.width = '30%'; status.textContent = '上传中...';
+  document.getElementById('upload_btn').disabled = true;
+
+  try {
+    var r = await fetch('/api/upload/' + encodeURIComponent(upload_server), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Remote-Path': encodeURIComponent(remote),
+        'X-Filename': encodeURIComponent(upload_file_name)
+      },
+      body: JSON.stringify({content: upload_file_data, remote_path: remote, filename: upload_file_name})
+    });
+    var j = await r.json();
+    bar.style.width = '100%'; status.textContent = '完成';
+    if (j.ok) {
+      toast('上传成功: ' + upload_file_name + ' → ' + remote, 'ok');
+      closeUploadModal();
+    } else {
+      toast(j.error || '上传失败', 'err');
+      bar.style.width = '0%';
+    }
+  } catch(e) {
+    toast('上传失败: ' + e.message, 'err');
+    bar.style.width = '0%';
+  }
+  document.getElementById('upload_btn').disabled = false;
+}
+
+function openDownloadModal(server) {
+  upload_server = server;
+  document.getElementById('download_modal_name').textContent = server;
+  document.getElementById('download_remote').value = '';
+  document.getElementById('download_modal').classList.add('open');
+}
+
+function closeDownloadModal() {
+  document.getElementById('download_modal').classList.remove('open');
+}
+
+function doDownload() {
+  var remote = document.getElementById('download_remote').value.trim();
+  if (!remote) return toast('请输入远程路径', 'err');
+  var url = '/api/download/' + encodeURIComponent(upload_server) + '?path=' + encodeURIComponent(remote);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = remote.split('/').pop() || 'download';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  closeDownloadModal();
+  toast('开始下载: ' + remote, 'ok');
+}
+
+// Close upload/download modals on overlay click
+['upload_modal','download_modal'].forEach(function(id) {
+  document.getElementById(id).addEventListener('click', function(e) {
+    if (e.target === this) { document.getElementById(id).classList.remove('open'); }
+  });
 });
 
 async function checkAll() {
@@ -571,6 +739,8 @@ async function refresh() {
       '<td>' +
         '<button class="btn-test" data-action="test" data-name="' + escHtml(n) + '">测试</button>' +
         '<button class="btn-proxy' + (p.proxy ? ' has-proxy' : '') + '" data-action="proxy" data-name="' + escHtml(n) + '" data-proxy="' + escHtml(p.proxy||'') + '" style="margin-left:4px">代理</button>' +
+        '<button class="btn-ghost" data-action="upload" data-name="' + escHtml(n) + '" style="margin-left:4px">上传</button>' +
+        '<button class="btn-ghost" data-action="download" data-name="' + escHtml(n) + '" style="margin-left:4px">下载</button>' +
         (!isDef ? '<button class="btn-ghost" data-action="default" data-name="' + escHtml(n) + '" style="margin-left:4px">默认</button>' : '') +
         '<button class="btn-del" data-action="delete" data-name="' + escHtml(n) + '" style="margin-left:4px">删除</button>' +
       '</td></tr>';
@@ -700,8 +870,61 @@ class Handler(BaseHTTPRequestHandler):
                     "port": s.get("port", 22), "alive": None,
                     "has_key": "key" in s, "has_password": "password" in s,
                     "proxy": s.get("proxy", ""),
+                    "allow": s.get("allow", ""), "deny": s.get("deny", ""),
                 }
             self._json(result)
+        elif u.path.startswith("/api/download/"):
+            name = self._path_name("/api/download/")
+            qs = parse_qs(u.query) if u.query else {}
+            remote_path = qs.get("path", [""])[0]
+            if not remote_path:
+                return self._json({"error": "path required"}, 400)
+
+            cfg = load_profiles()
+            if name not in cfg.get("servers", {}):
+                return self._json({"error": f"profile not found: {name}"}, 404)
+
+            s = cfg["servers"][name]
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_dl")
+            tmp.close()
+
+            sock = os.path.join(APP_DIR, "mux", "ssh-" + name)
+            target = f"{s.get('user','root')}@{s['host']}"
+            opts = ["-o", f"ControlPath={sock}", "-o", f"Port={s.get('port',22)}",
+                    "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30"]
+            if s.get("key"): opts += ["-i", s["key"]]
+            if s.get("proxy"): opts += ["-o", f"ProxyCommand={s['proxy']}"]
+
+            try:
+                subprocess.run(
+                    ["sftp", "-b", "-"] + opts + [target],
+                    input=f"get {remote_path} {tmp.name}\n".encode(),
+                    capture_output=True, timeout=120
+                )
+                if not os.path.exists(tmp.name) or os.path.getsize(tmp.name) == 0:
+                    os.unlink(tmp.name)
+                    return self._json({"error": "file not found or empty"}, 404)
+
+                with open(tmp.name, "rb") as f:
+                    data = f.read()
+                os.unlink(tmp.name)
+
+                filename = os.path.basename(remote_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+            except subprocess.TimeoutExpired:
+                os.unlink(tmp.name)
+                self._json({"error": "download timeout (120s)"}, 500)
+            except Exception as e:
+                try: os.unlink(tmp.name)
+                except: pass
+                self._json({"error": str(e)}, 500)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -733,6 +956,10 @@ class Handler(BaseHTTPRequestHandler):
                 srv["password"] = body["password"]
             if body.get("proxy"):
                 srv["proxy"] = body["proxy"]
+            if body.get("allow"):
+                srv["allow"] = body["allow"]
+            if body.get("deny"):
+                srv["deny"] = body["deny"]
 
             cfg["servers"][name] = srv
             if not cfg.get("default"):
@@ -745,6 +972,52 @@ class Handler(BaseHTTPRequestHandler):
             cfg = load_profiles()
             alive = check_alive(name, cfg)
             self._json({"ok": True, "name": name, "alive": alive})
+
+        elif u.path.startswith("/api/upload/"):
+            name = self._path_name("/api/upload/")
+            remote_path = body.get("remote_path", "").strip()
+            filename = body.get("filename", "upload")
+            content_b64 = body.get("content", "")
+            if not remote_path:
+                return self._json({"ok": False, "error": "remote_path required"}, 400)
+            if not content_b64:
+                return self._json({"ok": False, "error": "no file content"}, 400)
+
+            cfg = load_profiles()
+            if name not in cfg.get("servers", {}):
+                return self._json({"ok": False, "error": f"profile not found: {name}"}, 404)
+
+            s = cfg["servers"][name]
+            import tempfile
+            try:
+                raw = base64.b64decode(content_b64)
+            except Exception:
+                return self._json({"ok": False, "error": "invalid base64 content"}, 400)
+
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_" + os.path.basename(filename))
+            tmp.write(raw); tmp.close()
+
+            sock = os.path.join(APP_DIR, "mux", "ssh-" + name)
+            target = f"{s.get('user','root')}@{s['host']}"
+            opts = ["-o", f"ControlPath={sock}", "-o", f"Port={s.get('port',22)}",
+                    "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30"]
+            if s.get("key"): opts += ["-i", s["key"]]
+            if s.get("proxy"): opts += ["-o", f"ProxyCommand={s['proxy']}"]
+
+            try:
+                subprocess.run(
+                    ["sftp", "-b", "-"] + opts + [target],
+                    input=f"put {tmp.name} {remote_path}\n".encode(),
+                    capture_output=True, timeout=120
+                )
+                os.unlink(tmp.name)
+                self._json({"ok": True, "name": name, "size": len(raw), "remote": remote_path})
+            except subprocess.TimeoutExpired:
+                os.unlink(tmp.name)
+                self._json({"ok": False, "error": "upload timeout (120s)"}, 500)
+            except Exception as e:
+                os.unlink(tmp.name)
+                self._json({"ok": False, "error": str(e)}, 500)
 
         else:
             self._json({"error": "not found"}, 404)
@@ -781,6 +1054,18 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["servers"][name].pop("proxy", None)
                 else:
                     cfg["servers"][name]["proxy"] = body["proxy"]
+                updated = True
+            if "allow" in body:
+                if body["allow"] is None or body["allow"] == "":
+                    cfg["servers"][name].pop("allow", None)
+                else:
+                    cfg["servers"][name]["allow"] = body["allow"]
+                updated = True
+            if "deny" in body:
+                if body["deny"] is None or body["deny"] == "":
+                    cfg["servers"][name].pop("deny", None)
+                else:
+                    cfg["servers"][name]["deny"] = body["deny"]
                 updated = True
             if updated:
                 save_profiles(cfg)

@@ -17,6 +17,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 #ifdef _WIN32
@@ -30,6 +31,7 @@
   #include <io.h>
   #include <process.h>
   #include <direct.h>
+  #include <sys/stat.h>
 
   #define unlink _unlink
   #define mkdir(p,m) _mkdir(p)
@@ -46,6 +48,8 @@
   #define WEXITSTATUS(s) ((s) >> 8)
 
   static volatile int g_shutdown = 0;
+
+  #define stat _stat
 
   static const char *get_home(void) {
       static char home[512];
@@ -113,12 +117,14 @@ static char profiles_path[512];
 
 typedef struct {
     char name[64], host[128], user[32], key[512], password[256], proxy[512];
+    char allow[512], deny[512];
     int  port;
 } Profile;
 
 static Profile profiles[MAX_PROFILES];
 static int    profile_count = 0;
 static char   default_profile[64] = {0};
+static time_t config_mtime = 0;
 
 static void get_sock(const char *name, char *out, size_t sz) {
     snprintf(out, sz, "%s" PATH_SEP "ssh-%s", socket_dir, name);
@@ -515,6 +521,8 @@ static int load_profiles(void) {
                 else if (!strcmp(fn, "key")) expand_tilde(val, p->key, sizeof(p->key));
                 else if (!strcmp(fn, "password")) strncpy(p->password, val, sizeof(p->password)-1);
                 else if (!strcmp(fn, "proxy")) strncpy(p->proxy, val, sizeof(p->proxy)-1);
+                else if (!strcmp(fn, "allow")) strncpy(p->allow, val, sizeof(p->allow)-1);
+                else if (!strcmp(fn, "deny")) strncpy(p->deny, val, sizeof(p->deny)-1);
             } else if (*s >= '0' && *s <= '9') {
                 int v = 0;
                 while (*s >= '0' && *s <= '9') v = v*10 + (*s++ - '0');
@@ -529,6 +537,55 @@ static int load_profiles(void) {
 }
 
 /* ─── Request handler ──────────────────────────────────────────────── */
+
+static void maybe_reload_config(void) {
+    struct stat st;
+    if (stat(profiles_path, &st) == 0 && st.st_mtime > config_mtime) {
+        if (load_profiles() == 0) config_mtime = st.st_mtime;
+    }
+}
+
+#ifdef _WIN32
+static int match_glob(const char *pattern, const char *str) {
+    char buf[512];
+    const char *p = pattern;
+    while (*p) {
+        const char *end = strchr(p, '|');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+        memcpy(buf, p, len); buf[len] = 0;
+        /* simple substring match — covers common allow/deny patterns */
+        if (strstr(str, buf)) return 1;
+        if (!end) break;
+        p = end + 1;
+    }
+    return 0;
+}
+#else
+#include <regex.h>
+static int match_regex(const char *pattern, const char *str) {
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED | REG_NOSUB) != 0) return 0;
+    int ret = regexec(&re, str, 0, NULL, 0);
+    regfree(&re);
+    return ret == 0;
+}
+#define match_glob match_regex
+#endif
+
+static int validate_command(const char *cmd, const char *allow, const char *deny,
+                             char *err, size_t err_sz) {
+    if (!cmd || !cmd[0]) {
+        snprintf(err, err_sz, "empty command rejected"); return -1;
+    }
+    if (deny && deny[0] && match_glob(deny, cmd)) {
+        snprintf(err, err_sz, "command matches deny pattern"); return -1;
+    }
+    if (allow && allow[0] && !match_glob(allow, cmd)) {
+        snprintf(err, err_sz, "command does not match allow pattern"); return -1;
+    }
+    return 0;
+}
 
 static void cleanup_masters(void) {
     for (int i = 0; i < profile_count; i++) {
@@ -548,6 +605,7 @@ static void cleanup_masters(void) {
 }
 
 static void handle_request(socket_t fd) {
+    maybe_reload_config();
     char buf[BUF_SIZE] = {0};
     ssize_t n = sock_read(fd, buf, sizeof(buf) - 1);
     if (n <= 0) { sock_close(fd); return; }
@@ -638,6 +696,14 @@ static void handle_request(socket_t fd) {
         char sock[512], tgt[256];
         get_sock(profiles[idx].name, sock, sizeof(sock));
         snprintf(tgt, sizeof(tgt), "%s@%s", profiles[idx].user, profiles[idx].host);
+
+        char valid_err[256];
+        if (validate_command(cmd_buf, profiles[idx].allow, profiles[idx].deny,
+                             valid_err, sizeof(valid_err)) != 0) {
+            snprintf(resp, sizeof(resp),
+                "{\"ok\":false,\"error\":\"%s\"}", valid_err);
+            goto respond;
+        }
 
         char stdout_buf[BUF_SIZE] = {0};
         int use_pass = profiles[idx].password[0] != 0;
@@ -906,6 +972,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "sshc-daemon: no profiles found in %s\n", profiles_path);
         return 1;
     }
+    { struct stat st; if (stat(profiles_path, &st) == 0) config_mtime = st.st_mtime; }
 
     return run_daemon();
 }

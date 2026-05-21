@@ -20,6 +20,7 @@ Pure C daemon architecture (cross-platform: Unix + Windows). System deps only (p
 2. All remote commands go through: `./sshc exec <profile> "<command>"`
 3. Independent commands can run in parallel
 4. Config contains secrets — ensure `chmod 600 ~/.sshc/profiles.json`
+5. Config changes are picked up automatically (hot reload via mtime detection — no daemon restart needed)
 
 ## Quick Start
 
@@ -68,10 +69,12 @@ sshc daemon                              # Start daemon
 sshc health [profile]                    # Health check (omit for all, "*" = all)
 sshc exec <profile> <cmd> [timeout]      # Execute command (default timeout: 30s)
 sshc profiles                            # List all servers and status
-sshc add <name> <user@host> -i <key> [-p port] [--proxy <cmd>]  # Add server
+sshc add <name> <user@host> -i <key> [-p port] [--proxy <cmd>] [--allow <re>] [--deny <re>]  # Add server
 sshc remove <name>                       # Remove server
 sshc default <name>                      # Set default server
 sshc reconnect <profile>                 # Force reconnect (kill + re-establish ControlMaster)
+sshc upload <profile> <local> <remote>   # Upload file via SFTP (dirs auto tar-pipe)
+sshc download <profile> <remote> <local> # Download file via SFTP (dirs auto tar-pipe)
 sshc web [port]                          # Start web UI (default :17375)
 ```
 
@@ -81,8 +84,11 @@ sshc web [port]                          # Start web UI (default :17375)
 # Key auth
 ./sshc add prod root@10.0.0.1 -i ~/.ssh/id_rsa
 
-# Key auth with custom port + proxy
-./sshc add prod root@10.0.0.1 -i ~/.ssh/id_rsa -p 2222 --proxy "nc -X 5 -x 127.0.0.1:1080 %h %p"
+# Key auth with custom port + proxy + command safety
+./sshc add prod root@10.0.0.1 -i ~/.ssh/id_rsa -p 2222 \
+  --proxy "nc -X 5 -x 127.0.0.1:1080 %h %p" \
+  --allow "^(ls|df|uptime|systemctl|apt|docker).*" \
+  --deny ".*rm -rf.*|.*mkfs.*"
 
 # Password auth (server must be added via Web UI or direct JSON edit for password)
 ```
@@ -181,6 +187,14 @@ For agents adding servers programmatically, use the `proxy` field directly with 
       "key": "~/.ssh/id_rsa",
       "port": 22,
       "proxy": "nc -X 5 -x 127.0.0.1:1080 %h %p"
+    },
+    "safe-prod": {
+      "host": "10.0.0.1",
+      "user": "root",
+      "key": "~/.ssh/id_rsa",
+      "port": 22,
+      "allow": "^(ls|df|uptime|systemctl|apt|docker).*",
+      "deny": ".*rm -rf.*|.*mkfs.*|.*dd if=.*"
     }
   }
 }
@@ -193,6 +207,63 @@ For agents adding servers programmatically, use the `proxy` field directly with 
 - `servers.<name>.password` — plaintext password (mutually exclusive with `key`)
 - `servers.<name>.port` — SSH port (default: `22`)
 - `servers.<name>.proxy` — OpenSSH ProxyCommand string (optional, default: none / direct connect)
+- `servers.<name>.allow` — POSIX regex for allowed commands (optional, default: allow all)
+- `servers.<name>.deny` — POSIX regex for denied commands (optional, default: deny none)
+
+### Command Safety
+
+Per-server command validation via POSIX extended regex (Unix) / glob matching (Windows). Rules are evaluated as: **deny takes priority**. If `deny` matches → rejected. If `allow` is set but doesn't match → rejected.
+
+```bash
+# Add with command restrictions
+./sshc add safe-prod root@10.0.0.1 -i ~/.ssh/id_rsa \
+  --allow "^(ls|df|uptime|systemctl).*" \
+  --deny ".*rm -rf.*"
+
+# Update via API
+curl -X PUT http://127.0.0.1:17375/api/profiles/safe-prod \
+  -H 'Content-Type: application/json' \
+  -d '{"allow":"^(ls|df|uptime|systemctl|apt).*"}'
+```
+
+Validation happens in the C daemon before any command reaches SSH — no way to bypass at the CLI or Web UI level.
+
+### SFTP File Transfer
+
+File upload/download via OpenSSH `sftp` reusing the existing ControlMaster connection (no extra auth). Directories are auto-detected and transferred via tar pipe for efficiency.
+
+```bash
+# CLI upload (single file)
+./sshc upload prod ./app.tar.gz /opt/app.tar.gz
+
+# CLI upload (directory → auto tar pipe)
+./sshc upload prod ./my-project/ /opt/my-project/
+
+# CLI download
+./sshc download prod /var/log/syslog ./syslog
+./sshc download prod /opt/data/ ./data-backup/
+
+# Web UI: click "上传" / "下载" buttons in server list
+```
+
+**Web UI upload API:**
+```bash
+# Upload file (base64 content in JSON)
+curl -X POST http://127.0.0.1:17375/api/upload/prod \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"<base64>","remote_path":"/opt/app.tar.gz","filename":"app.tar.gz"}'
+# Response: {"ok":true,"name":"prod","size":12345,"remote":"/opt/app.tar.gz"}
+```
+
+**Web UI download API:**
+```bash
+# Download file (streaming binary response)
+curl -o app.tar.gz 'http://127.0.0.1:17375/api/download/prod?path=/opt/app.tar.gz'
+```
+
+### Config Hot Reload
+
+The C daemon automatically detects config file changes via mtime (last-modified timestamp). No daemon restart needed — any changes to `~/.sshc/profiles.json` take effect on the next request. This includes adding/removing servers, changing proxies, and updating allow/deny rules.
 
 ## Architecture
 
@@ -217,6 +288,9 @@ Web UI (python3) ──socket──> daemon IPC ──> health/exec requests
 - Health checks: `ensure_master` + `ssh exec "echo ok"` — also serves as connection warmup
 - **Unix:** AF_UNIX socket at `~/.sshc/daemon.sock`, `fork()` per request, `posix_spawnp` for master, `vfork` for exec
 - **Windows:** TCP localhost (port written to `~/.sshc/daemon.port`), `CreateThread` per request, `CreateProcess` for all SSH calls
+- Command validation: POSIX regex (Unix) / glob matching (Windows) evaluated in daemon before SSH execution
+- SFTP: `sftp -b -` with ControlPath reuse for file transfer; tar pipe for directories
+- Config hot reload: `stat()`-based mtime detection at start of each request handler, no polling loop
 - Key upload: browser `FileReader.readAsDataURL()` → base64 → `~/.sshc/keys/<profile>/<filename>` (chmod 600, basename-sanitized)
 - Proxy: stored as raw ProxyCommand string, injected via `-o ProxyCommand="..."` into all SSH invocations
 
@@ -270,6 +344,36 @@ wait
 ./sshc health          # all profiles
 ./sshc health prod     # single profile
 ./sshc profiles        # table format with status
+```
+
+### Uploading and downloading files
+
+```bash
+# Upload
+./sshc upload prod ./app.tar.gz /opt/app.tar.gz
+./sshc upload prod ./my-project/ /opt/my-project/   # directory → tar pipe
+
+# Download
+./sshc download prod /var/log/syslog ./syslog
+./sshc download prod /opt/data/ ./data-backup/
+
+# Via Web UI: click "上传" / "下载" buttons in server list
+```
+
+### Restricting commands with allow/deny patterns
+
+```bash
+# Add server with command safety
+./sshc add safe-prod root@10.0.0.1 -i ~/.ssh/id_rsa \
+  --allow "^(ls|df|uptime|systemctl|apt|docker).*" \
+  --deny ".*rm -rf.*|.*mkfs.*|.*dd if=.*"
+
+# Update via REST API
+curl -X PUT http://127.0.0.1:17375/api/profiles/safe-prod \
+  -H 'Content-Type: application/json' \
+  -d '{"allow":"^(ls|df|uptime|systemctl|apt|docker).*"}'
+
+# Validation happens in daemon — bypassing impossible
 ```
 
 ### Setting up via Web UI (when human needs visual management)

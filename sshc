@@ -173,13 +173,15 @@ for name in sorted(resp.keys()):
 }
 
 cmd_add() {
-    local name="" target="" key="" port="22" proxy=""
+    local name="" target="" key="" port="22" proxy="" allow="" deny=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -i) key="$2"; shift 2 ;;
             -p) port="$2"; shift 2 ;;
             --proxy) proxy="$2"; shift 2 ;;
+            --allow) allow="$2"; shift 2 ;;
+            --deny) deny="$2"; shift 2 ;;
             -*) echo "Unknown flag: $1" >&2; return 1 ;;
             *)
                 if [ -z "$name" ]; then name="$1"
@@ -214,7 +216,8 @@ f = os.path.expanduser('$PROFILES_FILE')
 os.makedirs(os.path.expanduser('$APP_DIR'), exist_ok=True)
 cfg = json.load(open(f)) if os.path.exists(f) else {}
 cfg.setdefault('servers', {})['$name'] = {
-    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port, 'proxy': '''$proxy'''
+    'host': '$host', 'user': '$user', 'key': '$key', 'port': $port,
+    'proxy': '''$proxy''', 'allow': '''$allow''', 'deny': '''$deny'''
 }
 if not cfg.get('default'):
     cfg['default'] = '$name'
@@ -269,6 +272,87 @@ cmd_reconnect() {
     echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('msg','') or d.get('error',''))" 2>/dev/null
 }
 
+cmd_upload() {
+    local profile="$1" local_path="$2" remote_path="$3"
+
+    if [ -z "$profile" ] || [ -z "$local_path" ] || [ -z "$remote_path" ]; then
+        echo "Usage: sshc upload <profile> <local> <remote>" >&2; return 1
+    fi
+    if [ ! -e "$local_path" ]; then
+        echo "ERROR: local path not found: $local_path" >&2; return 1
+    fi
+
+    python3 -c "
+import json, os, sys, subprocess
+
+f = os.path.expanduser('$PROFILES_FILE')
+cfg = json.load(open(f))
+s = cfg['servers'].get('$profile')
+if not s: sys.exit('ERROR: profile not found')
+
+sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + '$profile'
+target = s['user'] + '@' + s['host']
+
+opts = ['-o', 'ControlPath=' + sock, '-o', 'Port=' + str(s.get('port',22)),
+        '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=30']
+if s.get('key'): opts += ['-i', os.path.expanduser(s['key'])]
+if s.get('proxy'): opts += ['-o', 'ProxyCommand=' + s['proxy']]
+
+local, remote = '$local_path', '$remote_path'
+
+if os.path.isdir(local):
+    p1 = subprocess.Popen(['tar', 'czf', '-', '-C', os.path.dirname(local), os.path.basename(local)],
+                          stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(['ssh'] + opts + [target, 'mkdir -p ' + remote + '; tar xzf - -C ' + remote],
+                          stdin=p1.stdout)
+    p1.stdout.close()
+    sys.exit(p2.wait())
+else:
+    subprocess.run(['sftp', '-b', '-'] + opts + [target],
+                   input=('put ' + local + ' ' + remote + '\n').encode())
+"
+}
+
+cmd_download() {
+    local profile="$1" remote_path="$2" local_path="$3"
+
+    if [ -z "$profile" ] || [ -z "$remote_path" ] || [ -z "$local_path" ]; then
+        echo "Usage: sshc download <profile> <remote> <local>" >&2; return 1
+    fi
+
+    python3 -c "
+import json, os, sys, subprocess
+
+f = os.path.expanduser('$PROFILES_FILE')
+cfg = json.load(open(f))
+s = cfg['servers'].get('$profile')
+if not s: sys.exit('ERROR: profile not found')
+
+sock = os.path.expanduser('$APP_DIR') + '/mux/ssh-' + '$profile'
+target = s['user'] + '@' + s['host']
+
+opts = ['-o', 'ControlPath=' + sock, '-o', 'Port=' + str(s.get('port',22)),
+        '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=30']
+if s.get('key'): opts += ['-i', os.path.expanduser(s['key'])]
+if s.get('proxy'): opts += ['-o', 'ProxyCommand=' + s['proxy']]
+
+remote, local = '$remote_path', '$local_path'
+
+os.makedirs(os.path.dirname(local) or '.', exist_ok=True)
+# check if remote is a directory → tar pipe
+check = subprocess.run(['ssh'] + opts + [target, 'test -d ' + remote + ' && echo DIR || echo FILE'],
+                       capture_output=True, text=True)
+if 'DIR' in check.stdout:
+    subprocess.run(['ssh'] + opts + [target, 'tar czf - -C ' + remote + ' .'],
+                   stdout=open(local, 'wb'))
+else:
+    subprocess.run(['sftp', '-b', '-'] + opts + [target],
+                   input=('get ' + remote + ' ' + local + '\n').encode())
+"
+    # sftp exits 0 on success; tar pipe may return non-zero on empty dirs
+    return 0
+}
+
 cmd_web() {
     local port="${1:-17375}"
     echo "Starting sshc web UI on http://127.0.0.1:$port"
@@ -285,6 +369,8 @@ case "${1:-}" in
     remove)   shift; cmd_remove "$@" ;;
     default)  shift; cmd_default "$@" ;;
     reconnect) shift; cmd_reconnect "$@" ;;
+    upload)   shift; cmd_upload "$@" ;;
+    download) shift; cmd_download "$@" ;;
     web)      shift; cmd_web "$@" ;;
     *)        echo "Usage: sshc {daemon|exec|health|profiles|add|remove|default|reconnect|web} ..." >&2; exit 1 ;;
 esac
